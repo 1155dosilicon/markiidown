@@ -1,0 +1,46 @@
+{
+  "name": "markiidown",
+  "version": "1.1.0",
+  "description": "Leitor de Markdown (.md) 100% Standalone em TypeScript com Bun, TUI interativo no terminal e executável (.exe) para Windows.",
+  "type": "module",
+  "main": "src/index.ts",
+  "bin": {
+    "markiidown": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun run src/index.ts exemplo.md",
+    "build": "bun run scripts/build-exe.ts",
+    "build:exe": "bun run scripts/build-exe.ts",
+    "build:windows": "bun build --compile --minify --target=bun-windows-x64 ./src/index.ts --outfile ./dist/markiidown.exe",
+    "install:user": "bun run src/index.ts --install",
+    "uninstall:user": "bun run src/index.ts --uninstall",
+    "test:print": "bun run src/index.ts exemplo.md --print",
+    "test:export": "bun run src/index.ts exemplo.md --export dist/exemplo.html"
+  },
+  "keywords": [
+    "markdown",
+    "reader",
+    "viewer",
+    "bun",
+    "typescript",
+    "windows",
+    "cli",
+    "tui",
+    "standalone"
+  ],
+  "author": "Eli / MarkiiDown Team",
+  "license": "GPL-3.0-or-later",
+  "dependencies": {
+    "highlight.js": "^11.11.1",
+    "marked": "^15.0.7",
+    "marked-highlight": "^2.2.1",
+    "marked-terminal": "^7.3.0",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^22.13.9",
+    "typescript": "^5.8.2"
+  }
+}

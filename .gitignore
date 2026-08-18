@@ -1,0 +1,15 @@
+# Dependências
+node_modules/
+bun.lockb
+
+# Saída de compilação e binários grandes
+dist/
+
+# Logs e arquivos temporários
+*.log
+.DS_Store
+Thumbs.db
+
+# Variáveis de ambiente
+.env
+.env.local
