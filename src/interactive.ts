@@ -13,52 +13,60 @@ export interface InteractiveOptions {
 /**
  * Remove códigos de controle ANSI para calcular tamanho visual real do texto
  */
-function stripAnsi(text: string): string {
-  return text.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, "");
+const ANSI_SEQUENCE = /\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g;
+const ANSI_SEQUENCE_AT_START = /^(?:\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)))/;
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+export function stripAnsi(text: string): string {
+  return text.replace(ANSI_SEQUENCE, "");
 }
 
 /**
  * Trunca uma string contendo códigos ANSI sem quebrar tags ou ultrapassar a largura da tela
  */
-function truncateAnsi(str: string, maxWidth: number): string {
+export function truncateAnsi(str: string, maxWidth: number): string {
+  if (maxWidth <= 0) return "";
+
   let visualWidth = 0;
   let result = "";
-  let insideEscape = false;
-  let escapeSeq = "";
+  let offset = 0;
+  let truncated = false;
 
-  for (let i = 0; i < str.length; i++) {
-    const char = str[i];
-
-    if (char === "\x1B") {
-      insideEscape = true;
-      escapeSeq = char;
+  while (offset < str.length) {
+    const remaining = str.slice(offset);
+    const ansiMatch = remaining.match(ANSI_SEQUENCE_AT_START);
+    if (ansiMatch) {
+      result += ansiMatch[0];
+      offset += ansiMatch[0].length;
       continue;
     }
 
-    if (insideEscape) {
-      escapeSeq += char;
-      if (char >= "A" && char <= "z") {
-        insideEscape = false;
-        result += escapeSeq;
-        escapeSeq = "";
-      }
-      continue;
-    }
+    const segment = graphemeSegmenter.segment(remaining)[Symbol.iterator]().next().value?.segment;
+    if (!segment) break;
 
-    if (visualWidth >= maxWidth) {
+    const segmentWidth = Bun.stringWidth(segment);
+    if (visualWidth + segmentWidth > maxWidth) {
+      truncated = true;
       break;
     }
 
-    result += char;
-    visualWidth++;
+    result += segment;
+    visualWidth += segmentWidth;
+    offset += segment.length;
   }
 
   // Reseta cores caso tenha sido cortado com cor ativa
-  if (result.includes("\x1B[")) {
+  if (truncated && result.includes("\x1B[")) {
     result += "\x1B[0m";
   }
 
   return result;
+}
+
+function padToWidth(text: string, width: number): string {
+  const truncated = truncateAnsi(text, width);
+  const missingWidth = Math.max(0, width - Bun.stringWidth(stripAnsi(truncated)));
+  return truncated + " ".repeat(missingWidth);
 }
 
 /**
@@ -67,17 +75,18 @@ function truncateAnsi(str: string, maxWidth: number): string {
  */
 export async function runInteractiveViewer(options: InteractiveOptions): Promise<void> {
   const { fileName, fileSize, renderedLines, tableOfContents } = options;
+  const displayFileName = fileName.replace(/[\u0000-\u001F\u007F-\u009F]/g, "�");
   const totalLines = renderedLines.length;
 
-  // Define o título da janela no Windows
-  process.stdout.write(`\x1B]0;MarkiiDown - ${fileName}\x07`);
-
-  if (totalLines === 0 || !process.stdout.isTTY) {
+  if (totalLines === 0 || !process.stdout.isTTY || !process.stdin.isTTY) {
     for (const line of renderedLines) {
       console.log(line);
     }
     return;
   }
+
+  // Define o título da janela apenas quando há um terminal realmente interativo.
+  process.stdout.write(`\x1B]0;MarkiiDown - ${displayFileName}\x07`);
 
   let scrollTop = 0;
   let searchActive = false;
@@ -86,14 +95,29 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
   let currentMatchIndex = 0;
   let showHelpOverlay = false;
   let showTocOverlay = false;
+  let tocSelectedIndex = 0;
+  let tocScrollTop = 0;
 
   const getTerminalRows = () => process.stdout.rows || 24;
   const getTerminalCols = () => process.stdout.columns || 80;
+
+  function getContentHeight(): number {
+    return Math.max(1, getTerminalRows() - 1);
+  }
+
+  function getMaxScroll(): number {
+    return Math.max(0, totalLines - getContentHeight());
+  }
+
+  function scrollToLine(lineIndex: number, contextLines = 0): void {
+    scrollTop = Math.min(getMaxScroll(), Math.max(0, lineIndex - contextLines));
+  }
 
   function renderScreen() {
     const totalRows = getTerminalRows();
     const totalCols = getTerminalCols();
     const contentHeight = Math.max(1, totalRows - 1); // Exatamente 1 linha reservada para o rodapé
+    scrollTop = Math.min(scrollTop, Math.max(0, totalLines - contentHeight));
 
     let buffer = "";
 
@@ -117,7 +141,7 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
       if (lineIndex < totalLines) {
         const line = renderedLines[lineIndex] || "";
         if (searchQuery && searchMatches.includes(lineIndex)) {
-          const plain = stripAnsi(line).padEnd(totalCols).slice(0, totalCols);
+          const plain = padToWidth(stripAnsi(line), totalCols);
           buffer += pc.bgYellow(pc.black(plain));
         } else {
           buffer += truncateAnsi(line, totalCols);
@@ -132,24 +156,25 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
 
     if (searchActive) {
       const searchPrompt = ` 🔍 Buscar: ${searchQuery}█ (Enter para buscar, Esc para cancelar)`;
-      const clamped = searchPrompt.padEnd(totalCols).slice(0, totalCols);
+      const clamped = padToWidth(searchPrompt, totalCols);
       buffer += pc.bgYellow(pc.black(clamped));
     } else {
       const percent = totalLines > contentHeight ? Math.min(100, Math.round(((scrollTop + contentHeight) / totalLines) * 100)) : 100;
       const stats = `${scrollTop + 1}-${Math.min(scrollTop + contentHeight, totalLines)}/${totalLines} (${percent}%)`;
       
-      let leftText = ` 📄 ${fileName} (${formatBytes(fileSize)}) `;
+      let leftText = ` 📄 ${displayFileName} (${formatBytes(fileSize)}) `;
       let rightText = ` [?] Ajuda  [t] Sumário  [/] Buscar  [q] Sair  ${stats} `;
 
-      if (stripAnsi(leftText).length + stripAnsi(rightText).length > totalCols) {
-        leftText = ` 📄 ${fileName} `;
+      if (Bun.stringWidth(stripAnsi(leftText)) + Bun.stringWidth(stripAnsi(rightText)) > totalCols) {
+        leftText = ` 📄 ${displayFileName} `;
       }
-      if (stripAnsi(leftText).length + stripAnsi(rightText).length > totalCols) {
+      if (Bun.stringWidth(stripAnsi(leftText)) + Bun.stringWidth(stripAnsi(rightText)) > totalCols) {
         rightText = ` [q] Sair ${stats} `;
       }
 
-      const leftLen = stripAnsi(leftText).length;
-      const rightLen = stripAnsi(rightText).length;
+      leftText = truncateAnsi(leftText, Math.max(0, totalCols - Bun.stringWidth(stripAnsi(rightText))));
+      const leftLen = Bun.stringWidth(stripAnsi(leftText));
+      const rightLen = Bun.stringWidth(stripAnsi(rightText));
       const fillSpaces = Math.max(0, totalCols - leftLen - rightLen);
 
       buffer += pc.bgCyan(pc.black(leftText)) + pc.bgBlue(pc.white(" ".repeat(fillSpaces) + rightText));
@@ -187,7 +212,7 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
     }
 
     buf += `\x1B[${totalRows};1H\x1B[2K`;
-    const bottomText = " [Pressione qualquer tecla ou Esc para fechar a ajuda]".padEnd(width).slice(0, width);
+    const bottomText = padToWidth(" [Pressione qualquer tecla ou Esc para fechar a ajuda]", width);
     buf += pc.bgCyan(pc.black(bottomText));
     return buf;
   }
@@ -202,13 +227,21 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
     if (tableOfContents.length === 0) {
       lines.push(pc.dim("  Nenhum cabeçalho detectado no documento."));
     } else {
-      tableOfContents.slice(0, Math.max(1, contentHeight - 4)).forEach((item, index) => {
-        lines.push(`  ${pc.yellow(`[${index + 1}]`)} ${item.title}`);
+      const visibleCount = Math.max(1, contentHeight - 4);
+      const maxTocScroll = Math.max(0, tableOfContents.length - visibleCount);
+      tocScrollTop = Math.min(maxTocScroll, Math.max(0, tocScrollTop));
+      const visibleItems = tableOfContents.slice(tocScrollTop, tocScrollTop + visibleCount);
+
+      visibleItems.forEach((item, visibleIndex) => {
+        const itemIndex = tocScrollTop + visibleIndex;
+        const marker = itemIndex === tocSelectedIndex ? pc.cyan(">") : " ";
+        const number = pc.yellow(`[${itemIndex + 1}]`);
+        lines.push(`${marker} ${number} ${item.title}`);
       });
     }
 
     lines.push(pc.dim("─".repeat(Math.max(10, width - 4))));
-    lines.push(pc.dim("  Digite o número da seção para pular ou 't'/'Esc' para fechar."));
+    lines.push(pc.dim("  Use ↑/↓ e Enter para abrir; 't' ou Esc fecha o sumário."));
 
     for (let row = 1; row <= contentHeight; row++) {
       buf += `\x1B[${row};1H\x1B[2K`;
@@ -219,7 +252,7 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
     }
 
     buf += `\x1B[${totalRows};1H\x1B[2K`;
-    const bottomText = " [Pressione o número correspondente ou 't'/'Esc' para voltar]".padEnd(width).slice(0, width);
+    const bottomText = padToWidth(" [↑/↓] Selecionar  [Enter] Abrir  [t/Esc] Voltar", width);
     buf += pc.bgCyan(pc.black(bottomText));
     return buf;
   }
@@ -238,11 +271,14 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
 
     if (searchMatches.length > 0) {
       currentMatchIndex = 0;
-      scrollTop = Math.max(0, searchMatches[0] - 2);
+      scrollToLine(searchMatches[0], 2);
     }
   }
 
+  let cleanedUp = false;
   function cleanup() {
+    if (cleanedUp) return;
+    cleanedUp = true;
     // Restaura tela original do usuário, cursor e atributos
     process.stdout.write("\x1B[?1049l\x1B[?25h\x1B[0m");
     if (process.stdin.isTTY) {
@@ -270,10 +306,17 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
   process.stdout.on("resize", handleResize);
 
   return new Promise<void>((resolvePromise) => {
-    process.stdin.on("keypress", (str, key) => {
+    const finish = () => {
+      cleanup();
+      process.stdout.removeListener("resize", handleResize);
+      process.stdin.removeListener("keypress", handleKeypress);
+      resolvePromise();
+    };
+
+    const handleKeypress = (str: string, key: readline.Key) => {
       if (key && key.ctrl && key.name === "c") {
-        cleanup();
-        process.exit(0);
+        finish();
+        return;
       }
 
       if (showHelpOverlay) {
@@ -288,10 +331,39 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
           renderScreen();
           return;
         }
-        const num = parseInt(str, 10);
-        if (!isNaN(num) && num >= 1 && num <= tableOfContents.length) {
-          const target = tableOfContents[num - 1];
-          scrollTop = Math.max(0, target.lineIndex);
+
+        if (tableOfContents.length === 0) return;
+
+        const visibleCount = Math.max(1, getContentHeight() - 4);
+        if ((key && key.name === "down") || str === "j") {
+          tocSelectedIndex = Math.min(tableOfContents.length - 1, tocSelectedIndex + 1);
+          if (tocSelectedIndex >= tocScrollTop + visibleCount) {
+            tocScrollTop = tocSelectedIndex - visibleCount + 1;
+          }
+          renderScreen();
+          return;
+        }
+        if ((key && key.name === "up") || str === "k") {
+          tocSelectedIndex = Math.max(0, tocSelectedIndex - 1);
+          if (tocSelectedIndex < tocScrollTop) tocScrollTop = tocSelectedIndex;
+          renderScreen();
+          return;
+        }
+        if (key && key.name === "pagedown") {
+          tocSelectedIndex = Math.min(tableOfContents.length - 1, tocSelectedIndex + visibleCount);
+          tocScrollTop = Math.min(tocSelectedIndex, Math.max(0, tableOfContents.length - visibleCount));
+          renderScreen();
+          return;
+        }
+        if (key && key.name === "pageup") {
+          tocSelectedIndex = Math.max(0, tocSelectedIndex - visibleCount);
+          tocScrollTop = tocSelectedIndex;
+          renderScreen();
+          return;
+        }
+        if (key && key.name === "return") {
+          const target = tableOfContents[tocSelectedIndex];
+          scrollToLine(target.lineIndex);
           showTocOverlay = false;
           renderScreen();
           return;
@@ -331,9 +403,7 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
       const maxScroll = Math.max(0, totalLines - contentHeight);
 
       if (str === "q" || (key && key.name === "escape")) {
-        cleanup();
-        process.stdout.removeListener("resize", handleResize);
-        resolvePromise();
+        finish();
         return;
       }
 
@@ -345,6 +415,8 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
 
       if (str === "t") {
         showTocOverlay = true;
+        tocSelectedIndex = 0;
+        tocScrollTop = 0;
         renderScreen();
         return;
       }
@@ -358,14 +430,14 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
 
       if (str === "n" && searchMatches.length > 0) {
         currentMatchIndex = (currentMatchIndex + 1) % searchMatches.length;
-        scrollTop = Math.max(0, searchMatches[currentMatchIndex] - 2);
+        scrollToLine(searchMatches[currentMatchIndex], 2);
         renderScreen();
         return;
       }
 
       if (str === "N" && searchMatches.length > 0) {
         currentMatchIndex = (currentMatchIndex - 1 + searchMatches.length) % searchMatches.length;
-        scrollTop = Math.max(0, searchMatches[currentMatchIndex] - 2);
+        scrollToLine(searchMatches[currentMatchIndex], 2);
         renderScreen();
         return;
       }
@@ -416,6 +488,8 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
         renderScreen();
         return;
       }
-    });
+    };
+
+    process.stdin.on("keypress", handleKeypress);
   });
 }

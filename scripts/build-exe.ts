@@ -65,9 +65,9 @@ async function buildExecutable(): Promise<void> {
     console.log(`   1. ${pc.white("No Prompt / PowerShell:")}`);
     console.log(pc.cyan(`      .\\dist\\markiidown.exe exemplo.md`));
     console.log(`   2. ${pc.white("Para exibir direto no terminal:")}`);
-    console.log(pc.cyan(`      .\\dist\\markiidown.exe exemplo.md --cli`));
-    console.log(`   3. ${pc.white("Para adicionar ao PATH do Windows:")}`);
-    console.log(pc.dim(`      Copie o arquivo markiidown.exe para uma pasta incluída no seu PATH (ex: C:\\Windows ou sua pasta de binários).`));
+    console.log(pc.cyan(`      .\\dist\\markiidown.exe exemplo.md --print`));
+    console.log(`   3. ${pc.white("Para instalar no espaço do usuário e adicionar ao PATH:")}`);
+    console.log(pc.cyan(`      .\\dist\\markiidown.exe --install`));
     console.log(`   4. ${pc.white("Dê duplo clique ou arraste qualquer arquivo .md para cima do executável!")}\n`);
   } else {
     console.error(pc.red(`❌ Erro: O arquivo ${outfile} não foi encontrado após o build.`));

@@ -1,7 +1,7 @@
 {
   "name": "markiidown",
   "version": "1.1.0",
-  "description": "Leitor de Markdown (.md) 100% Standalone em TypeScript com Bun, TUI interativo no terminal e executável (.exe) para Windows.",
+  "description": "Leitor de Markdown (.md e .markdown) standalone em TypeScript com Bun, TUI interativo e executável Windows.",
   "type": "module",
   "main": "src/index.ts",
   "bin": {
@@ -13,6 +13,9 @@
     "build": "bun run scripts/build-exe.ts",
     "build:exe": "bun run scripts/build-exe.ts",
     "build:windows": "bun build --compile --minify --target=bun-windows-x64 ./src/index.ts --outfile ./dist/markiidown.exe",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "check": "bun run typecheck && bun test",
     "install:user": "bun run src/index.ts --install",
     "uninstall:user": "bun run src/index.ts --uninstall",
     "test:print": "bun run src/index.ts exemplo.md --print",

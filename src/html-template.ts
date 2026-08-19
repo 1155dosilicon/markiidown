@@ -1,4 +1,4 @@
-import { Marked, Renderer } from "marked";
+import { Marked, Renderer, TextRenderer } from "marked";
 import { markedHighlight } from "marked-highlight";
 import hljs from "highlight.js";
 import { basename } from "node:path";
@@ -26,35 +26,70 @@ function slugify(text: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function sanitizeUrl(url: string): string | null {
+  const normalized = url.trim().replace(/[\u0000-\u0020\u007F]+/g, "");
+  const scheme = normalized.match(/^([a-z][a-z\d+.-]*):/i)?.[1]?.toLowerCase();
+
+  if (scheme && !["http", "https", "mailto", "tel"].includes(scheme)) {
+    return null;
+  }
+
+  return url;
+}
+
 /**
- * Converte Markdown para HTML estático completo e autocontido
+ * Converte Markdown para HTML estático com estilos e scripts autocontidos
  */
 export function convertMarkdownToStaticHtml(rawMarkdown: string, filePath: string): string {
   const fileName = basename(filePath);
+  const safeFileName = escapeHtml(fileName);
   const { words, minutes } = calculateReadingTime(rawMarkdown);
   const sizeFormatted = formatBytes(new TextEncoder().encode(rawMarkdown).length);
 
   const toc: { id: string; text: string; level: number }[] = [];
   const usedSlugs = new Map<string, number>();
 
-  let processedMarkdown = rawMarkdown.replace(
-    />\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*\n((?:>.*\n?)*)/gi,
-    (_, type, content) => {
-      const cleanType = type.toLowerCase();
-      const cleanContent = content
-        .split("\n")
-        .map((line: string) => line.replace(/^>\s?/, ""))
-        .join("\n");
-      return `<div class="markdown-alert markdown-alert-${cleanType}">
-        <strong>${type.toUpperCase()}</strong>
-        <div>${cleanContent}</div>
-      </div>\n`;
-    }
-  );
-
   const renderer = new Renderer();
-  renderer.heading = ({ text, depth }: { text: string; depth: number }) => {
-    const cleanText = text.replace(/<[^>]*>/g, "");
+  renderer.html = ({ text }) => escapeHtml(text);
+  renderer.link = function ({ href, title, tokens }) {
+    const text = this.parser.parseInline(tokens);
+    const safeHref = sanitizeUrl(href);
+    if (!safeHref) return text;
+
+    const titleAttribute = title ? ` title="${escapeHtml(title)}"` : "";
+    return `<a href="${escapeHtml(safeHref)}"${titleAttribute}>${text}</a>`;
+  };
+  renderer.image = ({ href, title, text }) => {
+    const safeHref = sanitizeUrl(href);
+    if (!safeHref) return escapeHtml(text);
+
+    const titleAttribute = title ? ` title="${escapeHtml(title)}"` : "";
+    return `<img src="${escapeHtml(safeHref)}" alt="${escapeHtml(text)}"${titleAttribute}>`;
+  };
+  renderer.blockquote = function ({ tokens }) {
+    const innerHtml = this.parser.parse(tokens);
+    const alertMatch = innerHtml.match(/^<p>\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\](?:\r?\n)?/i);
+    if (!alertMatch) return `<blockquote>\n${innerHtml}</blockquote>\n`;
+
+    const type = alertMatch[1].toLowerCase();
+    const bodyHtml = innerHtml.replace(alertMatch[0], "<p>");
+    return `<div class="markdown-alert markdown-alert-${type}">
+      <strong>${type.toUpperCase()}</strong>
+      ${bodyHtml}
+    </div>\n`;
+  };
+  renderer.heading = function ({ tokens, depth }) {
+    const text = this.parser.parseInline(tokens);
+    const cleanText = this.parser.parseInline(tokens, new TextRenderer());
     let slug = slugify(cleanText) || `heading-${toc.length + 1}`;
 
     if (usedSlugs.has(slug)) {
@@ -66,13 +101,13 @@ export function convertMarkdownToStaticHtml(rawMarkdown: string, filePath: strin
     }
 
     if (depth <= 4) {
-      toc.push({ id: slug, text: cleanText, level: depth });
+      toc.push({ id: slug, text: escapeHtml(cleanText), level: depth });
     }
 
     return `<h${depth} id="${slug}">${text}</h${depth}>\n`;
   };
 
-  const htmlContent = htmlMarked.parse(processedMarkdown, { renderer }) as string;
+  const htmlContent = htmlMarked.parse(rawMarkdown, { renderer }) as string;
 
   const tocHtml = toc.length
     ? toc
@@ -90,8 +125,7 @@ export function convertMarkdownToStaticHtml(rawMarkdown: string, filePath: strin
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${fileName} - MarkiiDown</title>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css" id="hljs-theme">
+  <title>${safeFileName} - MarkiiDown</title>
   <style>
     :root {
       --bg-primary: #0d1117;
@@ -153,6 +187,7 @@ export function convertMarkdownToStaticHtml(rawMarkdown: string, filePath: strin
     .markdown-body h2 { border-bottom: 1px solid var(--border-color); padding-bottom: 0.3em; }
     .markdown-body p, .markdown-body ul, .markdown-body ol, .markdown-body table, .markdown-body pre { margin-bottom: 1.2em; }
     .markdown-body a { color: var(--accent-color); }
+    .markdown-body img { max-width: 100%; height: auto; }
     .markdown-body ul, .markdown-body ol { padding-left: 2em; }
     .markdown-body pre { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 6px; padding: 14px; overflow-x: auto; font-family: var(--font-mono); }
     .markdown-body code { font-family: var(--font-mono); font-size: 0.9em; background: var(--bg-secondary); padding: 0.2em 0.4em; border-radius: 4px; }
@@ -160,13 +195,33 @@ export function convertMarkdownToStaticHtml(rawMarkdown: string, filePath: strin
     .markdown-body table { width: 100%; border-collapse: collapse; margin-bottom: 1.5em; }
     .markdown-body th, .markdown-body td { border: 1px solid var(--border-color); padding: 8px 12px; }
     .markdown-body th { background: var(--bg-secondary); }
+    .markdown-body blockquote { padding: 0 1em; color: var(--text-muted); border-left: 4px solid var(--border-color); margin-bottom: 1.2em; }
     .markdown-alert { padding: 10px 14px; margin-bottom: 14px; border-left: 4px solid var(--accent-color); background: var(--bg-secondary); border-radius: 0 6px 6px 0; }
+    .markdown-alert-note { border-left-color: #58a6ff; }
+    .markdown-alert-tip { border-left-color: #3fb950; }
+    .markdown-alert-important { border-left-color: #a371f7; }
+    .markdown-alert-warning { border-left-color: #d29922; }
+    .markdown-alert-caution { border-left-color: #f85149; }
+    .hljs { color: #c9d1d9; }
+    .hljs-doctag, .hljs-keyword, .hljs-meta .hljs-keyword, .hljs-template-tag, .hljs-template-variable, .hljs-type, .hljs-variable.language_ { color: #ff7b72; }
+    .hljs-title, .hljs-title.class_, .hljs-title.class_.inherited__, .hljs-title.function_ { color: #d2a8ff; }
+    .hljs-attr, .hljs-attribute, .hljs-literal, .hljs-meta, .hljs-number, .hljs-operator, .hljs-selector-attr, .hljs-selector-class, .hljs-selector-id, .hljs-variable { color: #79c0ff; }
+    .hljs-meta .hljs-string, .hljs-regexp, .hljs-string { color: #a5d6ff; }
+    .hljs-built_in, .hljs-symbol { color: #ffa657; }
+    .hljs-code, .hljs-comment, .hljs-formula { color: #8b949e; }
+    [data-theme="light"] .hljs { color: #24292f; }
+    [data-theme="light"] .hljs-doctag, [data-theme="light"] .hljs-keyword, [data-theme="light"] .hljs-meta .hljs-keyword, [data-theme="light"] .hljs-template-tag, [data-theme="light"] .hljs-template-variable, [data-theme="light"] .hljs-type, [data-theme="light"] .hljs-variable.language_ { color: #cf222e; }
+    [data-theme="light"] .hljs-title, [data-theme="light"] .hljs-title.class_, [data-theme="light"] .hljs-title.class_.inherited__, [data-theme="light"] .hljs-title.function_ { color: #8250df; }
+    [data-theme="light"] .hljs-attr, [data-theme="light"] .hljs-attribute, [data-theme="light"] .hljs-literal, [data-theme="light"] .hljs-meta, [data-theme="light"] .hljs-number, [data-theme="light"] .hljs-operator, [data-theme="light"] .hljs-selector-attr, [data-theme="light"] .hljs-selector-class, [data-theme="light"] .hljs-selector-id, [data-theme="light"] .hljs-variable { color: #0550ae; }
+    [data-theme="light"] .hljs-meta .hljs-string, [data-theme="light"] .hljs-regexp, [data-theme="light"] .hljs-string { color: #0a3069; }
+    [data-theme="light"] .hljs-built_in, [data-theme="light"] .hljs-symbol { color: #953800; }
+    [data-theme="light"] .hljs-code, [data-theme="light"] .hljs-comment, [data-theme="light"] .hljs-formula { color: #6e7781; }
     @media (max-width: 800px) { aside { display: none; } main { padding: 20px; } }
   </style>
 </head>
 <body>
   <header>
-    <div class="header-title">📄 ${fileName}</div>
+    <div class="header-title">📄 ${safeFileName}</div>
     <div class="header-stats">
       <span>📊 ${sizeFormatted}</span>
       <span>📝 ${words} palavras</span>
@@ -189,10 +244,6 @@ export function convertMarkdownToStaticHtml(rawMarkdown: string, filePath: strin
       const current = document.documentElement.getAttribute('data-theme');
       const next = current === 'dark' ? 'light' : 'dark';
       document.documentElement.setAttribute('data-theme', next);
-      const hljs = document.getElementById('hljs-theme');
-      hljs.href = next === 'light' 
-        ? 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github.min.css'
-        : 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css';
     }
   </script>
 </body>

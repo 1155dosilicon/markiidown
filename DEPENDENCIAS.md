@@ -30,7 +30,8 @@ Todas as dependências externas utilizadas possuem licenças permissivas e ampla
 - **Justificativa Técnica:**
   - Permite rodar código TypeScript moderno nativamente sem etapa intermediária de compilação ou transpile.
   - O comando `bun build --compile --minify --target=bun-windows-x64` gera um executável `.exe` independente de ~95 MB que não requer Bun nem Node.js na máquina do usuário final.
-  - Zero dependências de rede em tempo de execução.
+  - A CLI não abre rede em tempo de execução. Um HTML exportado só acessa rede se o próprio Markdown referenciar links ou imagens externos.
+  - `bun:test` fornece a suíte de regressão sem adicionar um framework externo.
 
 ---
 
@@ -53,3 +54,5 @@ Todas as dependências externas utilizadas possuem licenças permissivas e ampla
 | **`@types/bun`** | `latest` | Definições de tipo para as APIs nativas do Bun. |
 | **`@types/node`** | `^22.13.9` | Definições de tipo para APIs do Node (`node:readline`, `node:fs`, `node:path`, `node:os`). |
 | **`typescript`** | `^5.8.2` | Verificação estática de tipos. |
+
+O exportador incorpora no próprio HTML as regras de cores usadas pelo `highlight.js`; não há folha de estilos carregada por CDN em tempo de execução.

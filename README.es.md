@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <b>Lector de Markdown (.md) 100% Standalone, ligero y offline desarrollado en TypeScript con Bun.</b>
+  <b>Lector de Markdown (.md y .markdown) 100% standalone, ligero y offline desarrollado en TypeScript con Bun.</b>
 </p>
 
 ---
@@ -24,15 +24,15 @@ Incluye soporte completo para **instalación en espacio de usuario (`%LOCALAPPDA
 - 📖 **Visualizador Interactivo en Terminal (TUI Pager)**: Navegación fluida con buffer alternativo de pantalla (`\x1B[?1049h`), desplazamiento por líneas (`j`/`k`, flechas), páginas (`PgDn`/`PgUp`), barra de progreso (%) y búsqueda en tiempo real (`/`).
 - 📑 **Sumario Integrado (TOC)**: Presione `t` para listar y saltar directamente a cualquier sección del documento.
 - 💻 **Modo Impresión Directa (`--print` / `-p`)**: Muestra el Markdown formateado y con colores directamente en la salida estándar (stdout), ideal para scripts y tuberías (pipes).
-- 🔄 **Modo Monitoreo Continuo (`--watch` / `-w`)**: Detecta modificaciones en el archivo en tiempo real y actualiza la pantalla al instante.
-- 📤 **Exportación a HTML Estático (`--export` / `-e`)**: Convierte el archivo a un documento `.html` autocontenido directamente en el disco.
+- 🔄 **Modo Monitoreo Continuo (`--watch` / `-w`)**: Detecta cambios y reemplazos atómicos del archivo y actualiza la pantalla.
+- 📤 **Exportación a HTML Estático (`--export` / `-e`)**: Genera un `.html` con CSS y resaltado de sintaxis integrados, sin CDN.
 - 📦 **Ejecutable Windows Standalone (`.exe`)**: Empaqueta el runtime de Bun, el código fuente y las dependencias en un único archivo binario portable.
 
 ---
 
 ## 📥 Requisitos
 
-- [Bun](https://bun.sh) (v1.0+) para desarrollo y compilación.
+- [Bun](https://bun.sh) (v1.3+) para desarrollo, pruebas y compilación.
 - *Nota:* El ejecutable compilado (`markiidown.exe`) es completamente autónomo y funciona en Windows x64 **sin requerir Bun, Node ni ninguna herramienta externa**.
 
 ---
@@ -45,12 +45,12 @@ Con el ejecutable `markiidown.exe` o el código fuente descargado, ejecute:
 # Instala en %LOCALAPPDATA%\MarkiiDown, añade al PATH y configura el menú contextual
 .\dist\markiidown.exe --install
 
-# O mediante Bun:
+# O desde el código fuente; compila el ejecutable standalone antes de instalarlo:
 bun run src/index.ts --install
 ```
 
 Tras la instalación:
-1. El comando `markiidown` estará disponible globalmente en cualquier ventana de PowerShell o CMD.
+1. El comando `markiidown` estará disponible en nuevas ventanas de PowerShell o CMD (vuelva a abrir la terminal después de instalar).
 2. Al hacer **clic derecho** en cualquier archivo `.md` verá la opción **"Abrir con MarkiiDown"**.
 3. Puede asociar MarkiiDown como aplicación predeterminada para archivos Markdown.
 
@@ -73,7 +73,7 @@ markiidown --uninstall
 | **`End` / `G`** | Ir al final del documento |
 | **`/`** | Buscar texto en el documento (escriba el término y presione Enter) |
 | **`n` / `N`** | Siguiente / Anterior coincidencia encontrada |
-| **`t`** | Abrir Sumario (Índice de secciones) |
+| **`t`** | Abrir el sumario; use `↑`/`↓` y `Enter` para elegir una sección |
 | **`?` / `h`** | Mostrar panel de ayuda |
 | **`q` / `Esc`** | Salir del lector |
 
@@ -103,6 +103,10 @@ markiidown --help
 markiidown --version
 ```
 
+Se aceptan archivos `.md` y `.markdown`. Las rutas explícitas inexistentes, las opciones desconocidas y las combinaciones de modos incompatibles terminan con un código distinto de cero, sin abrir silenciosamente otro archivo.
+
+El HTML exportado no carga estilos ni scripts desde CDN. El HTML bruto del Markdown se muestra como texto y se neutralizan protocolos peligrosos como `javascript:`. Los enlaces e imágenes indicados por el documento conservan sus destinos y pueden requerir red al abrir el HTML.
+
 ---
 
 ## 🔨 Compilación del Ejecutable `.exe`
@@ -113,7 +117,18 @@ Para generar el binário standalone:
 bun run build:exe
 ```
 
-El archivo ejecutable se generará en [`dist/markiidown.exe`](file:///C:/Users/Eli/Desktop/ia/markiidown/dist/markiidown.exe).
+El archivo ejecutable se generará en [`dist/markiidown.exe`](./dist/markiidown.exe).
+
+## ✅ Verificación del Proyecto
+
+```bash
+# TypeScript + pruebas de regresión
+bun run check
+
+# Comandos separados
+bun run typecheck
+bun test
+```
 
 ---
 
@@ -124,13 +139,16 @@ markiidown/
 ├── dist/                     # Ejecutable portable compilado (.exe)
 │   └── markiidown.exe
 ├── src/
-│   ├── index.ts              # Punto de entrada CLI y procesamiento de argumentos
+│   ├── index.ts              # Punto de entrada y despacho de acciones CLI
+│   ├── cli.ts                # Parser validado de opciones, acciones y modos
 │   ├── interactive.ts        # TUI Pager (Alternate screen, scroll, búsqueda, TOC)
 │   ├── terminal.ts           # Formateador ANSI (marked + marked-terminal) y watch
 │   ├── installer.ts          # Instalador en %LOCALAPPDATA% y gestor de PATH
 │   ├── windows-registry.ts   # Integración con Registro de Windows (HKCU)
 │   ├── html-template.ts      # Conversor de Markdown a HTML estático
+│   ├── marked-terminal.d.ts  # Tipado local de marked-terminal
 │   └── utils.ts              # Utilidades de sistema, rutas y métricas de lectura
+├── tests/                    # Pruebas de regresión con bun:test
 ├── scripts/
 │   └── build-exe.ts          # Script de compilación standalone con Bun
 ├── exemplo.md                # Archivo Markdown para demostración y pruebas
@@ -148,4 +166,4 @@ markiidown/
 
 ## 📜 Licencia
 
-Distribuido bajo la licencia **GNU General Public License v3.0 (GPL-3.0-or-later)**. Consulte el archivo [LICENSE](file:///C:/Users/Eli/Desktop/ia/markiidown/LICENSE) para más detalles.
+Distribuido bajo la licencia **GNU General Public License v3.0 (GPL-3.0-or-later)**. Consulte el archivo [LICENSE](./LICENSE) para más detalles.

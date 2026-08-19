@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
-import { basename, resolve } from "node:path";
+import { existsSync, lstatSync, mkdirSync, statSync } from "node:fs";
+import { dirname, extname, resolve } from "node:path";
 import pc from "picocolors";
+import { parseCliArgs } from "./cli.ts";
 import { convertMarkdownToStaticHtml } from "./html-template.ts";
-import { installMarkiiDown, uninstallMarkiiDown } from "./installer.ts";
+import { getInstalledExePath, installMarkiiDown, isRunningFromBunRuntime, uninstallMarkiiDown } from "./installer.ts";
 import { openInteractiveViewer, printDirectToTerminal, watchFileInTerminal } from "./terminal.ts";
 import { printBanner, resolveTargetFile } from "./utils.ts";
 import { registerWindowsContextMenu, unregisterWindowsContextMenu } from "./windows-registry.ts";
@@ -16,13 +18,13 @@ function showHelp(): void {
   printBanner();
   console.log(`
 ${pc.bold(pc.yellow("USO:"))}
-  markiidown [arquivo.md] [opções]
+  markiidown [arquivo.md|arquivo.markdown] [opções]
 
 ${pc.bold(pc.yellow("OPÇÕES PRINCIPAIS:"))}
   -i, --interactive       Abre no leitor interativo de terminal com rolagem e busca (Padrão)
   -p, --print             Imprime todo o conteúdo diretamente no terminal (sem paginação)
   -w, --watch             Monitora alterações no arquivo em tempo real
-  -e, --export <saida>    Exporta o arquivo Markdown para um HTML estático autocontido
+  -e, --export <saida>    Exporta para um arquivo .html/.htm com estilos embutidos
 
 ${pc.bold(pc.yellow("INSTALAÇÃO & INTEGRAÇÃO COM WINDOWS (SEM ADMIN):"))}
       --install           Instala em %LOCALAPPDATA%\\MarkiiDown, adiciona ao PATH e menu do Windows
@@ -40,7 +42,7 @@ ${pc.bold(pc.yellow("TECLAS DO MODO INTERATIVO:"))}
   ${pc.cyan("Espaço / PgDown")}  Avançar uma página
   ${pc.cyan("PgUp")}             Voltar uma página
   ${pc.cyan("/")}                Buscar palavra/termo no documento
-  ${pc.cyan("t")}                Abrir Sumário (Índice de seções)
+  ${pc.cyan("t")}                Abrir Sumário (navegue com ↑/↓ e Enter)
   ${pc.cyan("?")}                Ajuda de teclas
   ${pc.cyan("q / Esc")}          Sair do leitor
 
@@ -57,76 +59,37 @@ ${pc.bold(pc.yellow("EXEMPLOS:"))}
  * Função principal da CLI do MarkiiDown
  */
 async function main(): Promise<void> {
-  const args = process.argv.slice(2);
+  const options = parseCliArgs(process.argv.slice(2));
 
-  let targetFileArg: string | undefined;
-  let mode: "interactive" | "print" | "watch" | "export" = "interactive";
-  let exportPath: string | undefined;
-
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-
-    if (arg === "-h" || arg === "--help") {
+  switch (options.action) {
+    case "help":
       showHelp();
-      process.exit(0);
-    }
-
-    if (arg === "-v" || arg === "--version") {
+      return;
+    case "version":
       console.log(`MarkiiDown v${VERSION} (Bun ${Bun.version})`);
-      process.exit(0);
-    }
-
-    if (arg === "--install") {
+      return;
+    case "install": {
       const ok = await installMarkiiDown();
       process.exit(ok ? 0 : 1);
     }
-
-    if (arg === "--uninstall") {
+    case "uninstall": {
       const ok = await uninstallMarkiiDown();
       process.exit(ok ? 0 : 1);
     }
-
-    if (arg === "--register") {
+    case "register": {
       printBanner();
-      const ok = await registerWindowsContextMenu();
+      const executablePath = isRunningFromBunRuntime() ? getInstalledExePath() : undefined;
+      const ok = await registerWindowsContextMenu(executablePath);
       process.exit(ok ? 0 : 1);
     }
-
-    if (arg === "--unregister") {
+    case "unregister": {
       printBanner();
       const ok = await unregisterWindowsContextMenu();
       process.exit(ok ? 0 : 1);
     }
-
-    if (arg === "-p" || arg === "--print") {
-      mode = "print";
-      continue;
-    }
-
-    if (arg === "-i" || arg === "--interactive") {
-      mode = "interactive";
-      continue;
-    }
-
-    if (arg === "-w" || arg === "--watch") {
-      mode = "watch";
-      continue;
-    }
-
-    if (arg === "-e" || arg === "--export") {
-      mode = "export";
-      exportPath = args[++i];
-      if (!exportPath || exportPath.startsWith("-")) {
-        console.error(pc.red("❌ Erro: O parâmetro --export exige o caminho do arquivo HTML de saída."));
-        process.exit(1);
-      }
-      continue;
-    }
-
-    if (!arg.startsWith("-") && !targetFileArg) {
-      targetFileArg = arg;
-    }
   }
+
+  let mode = options.mode;
 
   // Se a saída padrão não for um terminal TTY interativo (ex: pipe), força modo print
   if (!process.stdout.isTTY && mode === "interactive") {
@@ -134,12 +97,15 @@ async function main(): Promise<void> {
   }
 
   // Resolve o arquivo alvo
-  const resolvedPath = resolveTargetFile(targetFileArg);
+  const resolvedPath = resolveTargetFile(options.targetFile);
 
   if (!resolvedPath) {
     printBanner();
-    console.error(pc.red("❌ Nenhum arquivo Markdown (.md) encontrado para visualização."));
-    console.log(pc.yellow(`Dica: Crie um arquivo README.md ou informe o caminho do arquivo:`));
+    const detail = options.targetFile
+      ? `O caminho informado não existe, não é um arquivo Markdown ou não contém arquivos Markdown: ${options.targetFile}`
+      : "Nenhum arquivo Markdown (.md ou .markdown) encontrado para visualização.";
+    console.error(pc.red(`❌ ${detail}`));
+    console.log(pc.yellow(`Dica: Crie um arquivo README.md ou informe um caminho válido:`));
     console.log(pc.cyan(`  markiidown meu-arquivo.md\n`));
     process.exit(1);
   }
@@ -150,7 +116,19 @@ async function main(): Promise<void> {
     const file = Bun.file(resolvedPath);
     const rawMarkdown = await file.text();
     const fullHtml = convertMarkdownToStaticHtml(rawMarkdown, resolvedPath);
-    const destination = resolve(process.cwd(), exportPath!);
+    const destination = resolve(process.cwd(), options.exportPath!);
+    const outputExtension = extname(destination).toLowerCase();
+    if (outputExtension !== ".html" && outputExtension !== ".htm") {
+      throw new Error("O arquivo de exportação deve usar a extensão .html ou .htm.");
+    }
+    if (existsSync(destination) && statSync(destination).isDirectory()) {
+      throw new Error(`O destino da exportação é um diretório: ${destination}`);
+    }
+    if (existsSync(destination) && lstatSync(destination).isSymbolicLink()) {
+      throw new Error(`O destino da exportação não pode ser um link simbólico: ${destination}`);
+    }
+
+    mkdirSync(dirname(destination), { recursive: true });
 
     await Bun.write(destination, fullHtml);
 

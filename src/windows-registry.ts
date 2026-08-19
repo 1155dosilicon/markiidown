@@ -1,4 +1,5 @@
-import { resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { basename, resolve } from "node:path";
 import pc from "picocolors";
 
 /**
@@ -12,6 +13,17 @@ export async function registerWindowsContextMenu(customExePath?: string): Promis
   }
 
   const exePath = customExePath ? resolve(customExePath) : process.execPath;
+  const executableName = basename(exePath).toLowerCase();
+
+  if (!existsSync(exePath)) {
+    console.error(pc.red(`❌ Executável não encontrado: ${exePath}`));
+    return false;
+  }
+
+  if (!customExePath && (executableName === "bun" || executableName === "bun.exe")) {
+    console.error(pc.red("❌ O menu de contexto exige o executável standalone. Execute --install ou use o binário compilado."));
+    return false;
+  }
 
   console.log(pc.cyan("\n🔧 Registrando MarkiiDown no Windows..."));
   console.log(`${pc.dim("Caminho do Executável:")} ${pc.white(exePath)}`);
@@ -137,11 +149,19 @@ export async function unregisterWindowsContextMenu(): Promise<boolean> {
     "HKCU\\Software\\Classes\\Applications\\markiidown.exe",
   ];
 
+  let success = true;
   for (const key of keysToDelete) {
+    const queryProc = Bun.spawn(["reg", "query", key], { stdout: "ignore", stderr: "ignore" });
+    if ((await queryProc.exited) !== 0) continue;
+
     const proc = Bun.spawn(["reg", "delete", key, "/f"], { stdout: "ignore", stderr: "ignore" });
-    await proc.exited;
+    if ((await proc.exited) !== 0) success = false;
   }
 
-  console.log(pc.green("✅ Registro do MarkiiDown removido com sucesso do Windows!\n"));
-  return true;
+  if (success) {
+    console.log(pc.green("✅ Registro do MarkiiDown removido com sucesso do Windows!\n"));
+  } else {
+    console.error(pc.red("❌ Não foi possível remover todas as entradas do Registro.\n"));
+  }
+  return success;
 }

@@ -33,21 +33,30 @@ export function printBanner(): void {
 export function resolveTargetFile(inputPath?: string): string | null {
   if (inputPath) {
     const fullPath = isAbsolute(inputPath) ? inputPath : resolve(process.cwd(), inputPath);
-    if (existsSync(fullPath)) {
+    if (!existsSync(fullPath)) return null;
+
+    try {
       const stats = statSync(fullPath);
       if (stats.isDirectory()) {
-        const found = findFirstMarkdownInDir(fullPath);
-        if (found) return found;
-      } else {
+        return findFirstMarkdownInDir(fullPath);
+      }
+
+      if (stats.isFile() && isMarkdownPath(fullPath)) {
         return fullPath;
       }
+    } catch {
+      return null;
     }
+
+    return null;
   }
 
   // Tenta encontrar README.md no diretório atual
   const defaultReadme = resolve(process.cwd(), "README.md");
   if (existsSync(defaultReadme)) {
-    return defaultReadme;
+    try {
+      if (statSync(defaultReadme).isFile()) return defaultReadme;
+    } catch {}
   }
 
   // Procura o primeiro arquivo .md na pasta atual
@@ -65,15 +74,32 @@ export function resolveTargetFile(inputPath?: string): string | null {
 function findFirstMarkdownInDir(dirPath: string): string | null {
   try {
     const files = readdirSync(dirPath);
-    const readme = files.find((f) => f.toLowerCase() === "readme.md");
+    const markdownFiles = files.filter((fileName) => {
+      if (!isMarkdownPath(fileName)) return false;
+      try {
+        return statSync(join(dirPath, fileName)).isFile();
+      } catch {
+        return false;
+      }
+    });
+
+    const readme = markdownFiles.find((f) => f.toLowerCase() === "readme.md");
     if (readme) return join(dirPath, readme);
 
-    const anyMd = files.find((f) => extname(f).toLowerCase() === ".md");
+    const anyMd = markdownFiles.sort((a, b) => a.localeCompare(b))[0];
     if (anyMd) return join(dirPath, anyMd);
   } catch {
     return null;
   }
   return null;
+}
+
+/**
+ * Informa se o caminho usa uma extensão Markdown suportada.
+ */
+export function isMarkdownPath(filePath: string): boolean {
+  const extension = extname(filePath).toLowerCase();
+  return extension === ".md" || extension === ".markdown";
 }
 
 /**
@@ -88,7 +114,7 @@ export function listMarkdownFilesInDir(dirPath: string): FileInfo[] {
       const fullPath = join(dirPath, entry);
       try {
         const stats = statSync(fullPath);
-        if (stats.isFile() && extname(entry).toLowerCase() === ".md") {
+        if (stats.isFile() && isMarkdownPath(entry)) {
           result.push({
             name: entry,
             relativePath: entry,
@@ -114,10 +140,10 @@ export function listMarkdownFilesInDir(dirPath: string): FileInfo[] {
  * Formata bytes para leitura humana
  */
 export function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 Bytes";
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 Bytes";
   const k = 1024;
-  const sizes = ["Bytes", "KB", "MB", "GB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  const sizes = ["Bytes", "KB", "MB", "GB", "TB", "PB"];
+  const i = Math.min(sizes.length - 1, Math.floor(Math.log(bytes) / Math.log(k)));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
 }
 
@@ -126,6 +152,6 @@ export function formatBytes(bytes: number): string {
  */
 export function calculateReadingTime(text: string): { words: number; minutes: number } {
   const words = text.trim().split(/\s+/).filter(Boolean).length;
-  const minutes = Math.max(1, Math.ceil(words / 200));
+  const minutes = words === 0 ? 0 : Math.max(1, Math.ceil(words / 200));
   return { words, minutes };
 }
