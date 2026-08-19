@@ -11,8 +11,11 @@
 ### Características Centrais:
 1. **Zero Rede / Zero Portas:** Não inicia servidores HTTP e não abre portas no sistema.
 2. **Instalador sem Administrador (`--install` / `--uninstall`):** Instala o `.exe` em `%LOCALAPPDATA%\MarkiiDown`, registra no `PATH` do usuário (`HKCU\Environment\Path`) e associa ao menu do Windows Explorer via `HKCU\Software\Classes`.
-3. **Leitor Interativo no Terminal (TUI Pager):** Utiliza o Alternate Screen Buffer (`\x1B[?1049h`), rolagem coordenada com posicionamento absoluto de linhas (`\x1B[row;1H\x1B[2K`), busca em tempo real (`/`), sumário navegável (`t`, setas e `Enter`) e ajuda (`?`). O TUI só é ativado quando stdin e stdout são TTYs.
+3. **Leitor Interativo no Terminal (TUI Pager):** Utiliza o Alternate Screen Buffer (`\x1B[?1049h`), quebra ANSI/Unicode responsiva sem descartar trechos longos, rolagem coordenada, busca (`/`), sumário navegável (`t`, setas e `Enter`) e ajuda (`?`). O layout é recalculado ao redimensionar e o TUI só é ativado quando stdin e stdout são TTYs.
+   - `marked-terminal` opera com `reflowText: false`; sua quebra nativa pode separar sequências ANSI do texto. Toda quebra visual é responsabilidade de `wrapAnsi` em `interactive.ts`.
+   - Um adaptador do renderer `text` percorre tokens inline aninhados do `marked` 15, mantendo `strong`, `codespan` e outros estilos corretos dentro de listas.
 4. **Modo Impressão Direta (`--print` / `-p`):** Exibe o conteúdo formatado com cores ANSI diretamente na saída padrão (stdout).
+   - O realce sintático usa `cli-highlight` somente quando o fence declara uma linguagem. `languageSubset: []` desativa autodetecção em blocos sem identificador, evitando falsos positivos em texto comum e árvores de arquivos. Um pós-processamento ANSI reconhece opções longas de CLI (`--install`, `--export=arquivo`) como tokens atômicos, impedindo que gramáticas shell/PowerShell deixem o primeiro hífen com outra cor.
 5. **Modo Monitoramento (`--watch` / `-w`):** Observa a pasta do arquivo para sobreviver a salvamentos por substituição atômica e atualiza a exibição com debounce.
 6. **Modo Exportação (`--export` / `-e`):** Converte para `.html`/`.htm` com CSS de realce embutido, sem CDN. HTML bruto é escapado e protocolos perigosos são neutralizados; recursos referenciados pelo Markdown continuam externos.
 7. **Documentação Multilíngue:** `README.md` (Português), `README.en.md` (Inglês), `README.es.md` (Espanhol).
@@ -82,4 +85,4 @@ bun test            # testes unitários e de regressão
 bun run check       # executa ambos
 ```
 
-Os testes cobrem parsing estrito da CLI, resolução de `.md`/`.markdown`, ANSI e largura visual, TOC sem falsos positivos de tabelas, segurança/autonomia do HTML e helpers do instalador.
+Os testes cobrem parsing estrito da CLI, resolução de `.md`/`.markdown`, ANSI, Unicode e quebra de linhas sem perda, estilos inline em parágrafos/cabeçalhos/listas/citações/tabelas, blocos tipados e não tipados, TOC sem falsos positivos, segurança do HTML e helpers do instalador.

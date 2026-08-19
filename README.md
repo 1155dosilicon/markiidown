@@ -21,7 +21,8 @@ Inclui suporte completo a **instalação em espaço de usuário (`%LOCALAPPDATA%
 - 🔒 **100% Standalone & Offline**: Zero servidores HTTP, zero portas abertas e zero tráfego de rede.
 - 🪟 **Instalador sem Administrador (`--install`)**: Instala em `%LOCALAPPDATA%\MarkiiDown`, adiciona automaticamente ao `PATH` do usuário e configura o menu de contexto do Windows.
 - 🖱️ **Integração com o Windows Explorer**: Opção *"Abrir com MarkiiDown"* no menu de clique direito e suporte à associação no *"Abrir com..."*.
-- 📖 **Visualizador Interativo no Terminal (TUI Pager)**: Navegação suave com buffer alternativo de tela (`\x1B[?1049h`), rolagem por linhas (`j`/`k`, setas), páginas (`PgDn`/`PgUp`), barra de progresso (%) e busca em tempo real (`/`).
+- 📖 **Visualizador Interativo no Terminal (TUI Pager)**: Navegação suave, quebra responsiva de linhas longas sem perder conteúdo, rolagem, barra de progresso e busca em tempo real (`/`).
+- 🎨 **Realce de Código Explícito**: Blocos como `` ```ts `` e `` ```python `` recebem cores; blocos sem linguagem permanecem neutros para não colorir palavras comuns por engano. Opções longas de CLI, como `--install`, são coloridas como um token inteiro inclusive em blocos shell/PowerShell.
 - 📑 **Sumário Integrado (TOC)**: Pressione `t` para listar e pular instantaneamente para qualquer seção do documento.
 - 💻 **Modo Impressão Direta (`--print` / `-p`)**: Exibe o Markdown formatado e colorido diretamente na saída padrão (stdout), ideal para scripts e pipes.
 - 🔄 **Modo Monitoramento Contínuo (`--watch` / `-w`)**: Observa alterações e substituições atômicas do arquivo em tempo real e atualiza a tela.

@@ -21,7 +21,8 @@ It features complete support for **non-admin user installation (`%LOCALAPPDATA%`
 - 🔒 **100% Standalone & Offline**: Zero HTTP servers, zero open ports, and zero network traffic.
 - 🪟 **Non-Admin User Installer (`--install`)**: Installs to `%LOCALAPPDATA%\MarkiiDown`, automatically adds to User `PATH`, and configures Windows context menu.
 - 🖱️ **Windows Explorer Integration**: *"Open with MarkiiDown"* right-click option and native support for Windows *"Open with..."* association.
-- 📖 **Interactive Terminal Viewer (TUI Pager)**: Smooth navigation using terminal Alternate Screen Buffer (`\x1B[?1049h`), line scrolling (`j`/`k`, arrow keys), page scrolling (`PgDn`/`PgUp`), reading progress (%), and real-time text search (`/`).
+- 📖 **Interactive Terminal Viewer (TUI Pager)**: Smooth navigation, responsive wrapping of long lines without content loss, scrolling, reading progress, and real-time text search (`/`).
+- 🎨 **Explicit Code Highlighting**: Blocks such as `` ```ts `` and `` ```python `` are colored; blocks without a language stay neutral to avoid false highlighting in ordinary words. Long CLI options such as `--install` are colored as one complete token, including in shell/PowerShell blocks.
 - 📑 **Built-in Table of Contents (TOC)**: Press `t` to list and jump directly to any document heading.
 - 💻 **Direct Print Mode (`--print` / `-p`)**: Outputs formatted and colored Markdown directly to standard output (stdout), perfect for scripts and piping.
 - 🔄 **Continuous Watch Mode (`--watch` / `-w`)**: Watches changes and atomic file replacements in real time and refreshes the display.

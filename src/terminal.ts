@@ -1,35 +1,155 @@
 import { Marked } from "marked";
 import { markedTerminal } from "marked-terminal";
+import { highlight as highlightCli } from "cli-highlight";
 import pc from "picocolors";
 import { watch } from "node:fs";
 import { basename, dirname } from "node:path";
 import { calculateReadingTime, formatBytes } from "./utils.ts";
 import { runInteractiveViewer, stripAnsi } from "./interactive.ts";
 
+const SGR_SEQUENCE_AT_START = /^\x1B\[([0-9;]*)m/;
+const LONG_CLI_OPTION = /(?<![\w-])--[A-Za-z0-9][A-Za-z0-9-]*(?:=[^\s"'`)<>{}\]]+)?/g;
+
+function updateForeground(sequence: string, currentForeground: string | null): string | null {
+  const parametersText = sequence.slice(2, -1);
+  const parameters = parametersText === "" ? [0] : parametersText.split(";").map(Number);
+  let foreground = currentForeground;
+
+  for (let index = 0; index < parameters.length; index++) {
+    const parameter = parameters[index];
+    if (parameter === 0 || parameter === 39) foreground = null;
+    else if ((parameter >= 30 && parameter <= 37) || (parameter >= 90 && parameter <= 97)) {
+      foreground = `\x1B[${parameter}m`;
+    } else if (parameter === 38) {
+      foreground = sequence;
+      break;
+    }
+  }
+
+  return foreground;
+}
+
+/**
+ * Grammars de shell podem dividir opções GNU, por exemplo renderizando
+ * `--install` como "-" + "-install". Esta etapa trata a opção como um token
+ * atômico e mantém todo o argumento amarelo sem alterar o restante do código.
+ */
+export function normalizeCliOptionHighlight(highlightedCode: string): string {
+  if (!pc.isColorSupported) return highlightedCode;
+
+  const plainCode = stripAnsi(highlightedCode);
+  const ranges = [...plainCode.matchAll(LONG_CLI_OPTION)].map((match) => ({
+    start: match.index,
+    end: match.index + match[0].length,
+  }));
+  if (ranges.length === 0) return highlightedCode;
+
+  let result = "";
+  let rawOffset = 0;
+  let plainOffset = 0;
+  let rangeIndex = 0;
+  let insideRange = false;
+  let foreground: string | null = null;
+
+  while (rawOffset < highlightedCode.length) {
+    const range = ranges[rangeIndex];
+    if (insideRange && range && plainOffset >= range.end) {
+      result += foreground ?? "\x1B[39m";
+      insideRange = false;
+      rangeIndex++;
+      continue;
+    }
+    if (!insideRange && range && plainOffset === range.start) {
+      result += "\x1B[33m";
+      insideRange = true;
+    }
+
+    const remaining = highlightedCode.slice(rawOffset);
+    const sgrMatch = remaining.match(SGR_SEQUENCE_AT_START);
+    if (sgrMatch) {
+      foreground = updateForeground(sgrMatch[0], foreground);
+      if (!insideRange) result += sgrMatch[0];
+      rawOffset += sgrMatch[0].length;
+      continue;
+    }
+
+    result += highlightedCode[rawOffset];
+    rawOffset++;
+    plainOffset++;
+  }
+
+  if (insideRange) result += foreground ?? "\x1B[39m";
+  return result;
+}
+
+function renderCodeBlock(code: string, language?: string): string {
+  const normalizedLanguage = language?.trim().split(/\s+/)[0];
+  let renderedCode = code;
+
+  if (normalizedLanguage && pc.isColorSupported) {
+    try {
+      renderedCode = normalizeCliOptionHighlight(
+        highlightCli(code, { language: normalizedLanguage, languageSubset: [] })
+      );
+    } catch {
+      renderedCode = pc.yellow(code);
+    }
+  }
+
+  const indentation = "  ";
+  return renderedCode
+    .split("\n")
+    .map((line) => indentation + line)
+    .join("\n") + "\n\n";
+}
+
 function createTerminalMarked(): Marked {
   const terminalMarked = new Marked();
   terminalMarked.use(
-    markedTerminal({
-      width: Math.min(process.stdout.columns || 80, 100),
-      reflowText: true,
-      showPrefix: false,
-      unescape: true,
-      emoji: true,
-      tab: 2,
-      heading: (text: string) => pc.bold(pc.cyan(text)),
-      firstHeading: (text: string) => pc.bold(pc.magenta(text)),
-      secondHeading: (text: string) => pc.bold(pc.green(text)),
-      thirdHeading: (text: string) => pc.bold(pc.yellow(text)),
-      blockquote: (text: string) => pc.italic(pc.gray(text)),
-      listitem: (text: string) => pc.white(text),
-      strong: (text: string) => pc.bold(pc.white(text)),
-      em: (text: string) => pc.italic(pc.white(text)),
-      codespan: (text: string) => pc.yellow(text),
-      del: (text: string) => pc.strikethrough(pc.gray(text)),
-      link: (text: string) => pc.blue(pc.underline(text)),
-      href: (text: string) => pc.dim(pc.blue(text)),
-    }) as any
+    markedTerminal(
+      {
+        width: Math.min(process.stdout.columns || 80, 100),
+        // A quebra nativa do marked-terminal separa códigos ANSI do texto na
+        // borda da linha. O pager faz a quebra ANSI/Unicode com segurança.
+        reflowText: false,
+        showPrefix: false,
+        unescape: true,
+        emoji: true,
+        tab: 2,
+        heading: (text: string) => pc.bold(pc.cyan(text)),
+        firstHeading: (text: string) => pc.bold(pc.magenta(text)),
+        secondHeading: (text: string) => pc.bold(pc.green(text)),
+        thirdHeading: (text: string) => pc.bold(pc.yellow(text)),
+        blockquote: (text: string) => pc.italic(pc.gray(text)),
+        listitem: (text: string) => pc.white(text),
+        strong: (text: string) => pc.bold(pc.white(text)),
+        em: (text: string) => pc.italic(pc.white(text)),
+        codespan: (text: string) => pc.yellow(text),
+        del: (text: string) => pc.strikethrough(pc.gray(text)),
+        link: (text: string) => pc.blue(pc.underline(text)),
+        href: (text: string) => pc.dim(pc.blue(text)),
+      },
+      // Sem linguagem declarada, texto técnico e árvores de arquivos devem
+      // permanecer neutros. Blocos ```ts, ```python etc. continuam realçados.
+      { languageSubset: [] }
+    ) as any
   );
+
+  // marked-terminal 7 não percorre tokens inline aninhados dentro de itens de
+  // lista gerados pelo marked 15. Sem este adaptador, **forte** e `código`
+  // aparecem literais ou com estilo parcial em listas.
+  terminalMarked.use({
+    renderer: {
+      code(token) {
+        return renderCodeBlock(token.text, token.lang);
+      },
+      text(token) {
+        return "tokens" in token && token.tokens
+          ? this.parser.parseInline(token.tokens)
+          : token.text;
+      },
+    },
+  });
   return terminalMarked;
 }
 

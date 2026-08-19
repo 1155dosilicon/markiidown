@@ -22,6 +22,90 @@ export function stripAnsi(text: string): string {
 }
 
 /**
+ * Quebra uma linha em segmentos visuais sem perder texto, sequências ANSI ou
+ * grafemas Unicode. Estilos SGR ativos são reaplicados na linha seguinte.
+ */
+export function wrapAnsi(str: string, maxWidth: number): string[] {
+  if (maxWidth <= 0 || str.length === 0) return [""];
+
+  const lines: string[] = [];
+  const activeSgr: string[] = [];
+  let currentLine = "";
+  let currentWidth = 0;
+  let offset = 0;
+  let lineHasNonWhitespace = false;
+  let lastBreak: {
+    offset: number;
+    line: string;
+    activeSgr: string[];
+  } | null = null;
+
+  const pushLine = (line = currentLine, styles = activeSgr) => {
+    lines.push(styles.length > 0 ? line + "\x1B[0m" : line);
+    currentLine = activeSgr.join("");
+    currentWidth = 0;
+    lineHasNonWhitespace = false;
+    lastBreak = null;
+  };
+
+  while (offset < str.length) {
+    const remaining = str.slice(offset);
+    const ansiMatch = remaining.match(ANSI_SEQUENCE_AT_START);
+    if (ansiMatch) {
+      const sequence = ansiMatch[0];
+      currentLine += sequence;
+      offset += sequence.length;
+
+      if (/^\x1B\[[0-9;]*m$/.test(sequence)) {
+        const parameters = sequence.slice(2, -1);
+        if (parameters === "" || parameters.split(";").includes("0")) {
+          activeSgr.length = 0;
+        } else {
+          activeSgr.push(sequence);
+        }
+      }
+      continue;
+    }
+
+    const segment = graphemeSegmenter.segment(remaining)[Symbol.iterator]().next().value?.segment;
+    if (!segment) break;
+
+    const segmentWidth = Bun.stringWidth(segment);
+    if (currentWidth > 0 && currentWidth + segmentWidth > maxWidth) {
+      if (lastBreak) {
+        const breakPoint = lastBreak;
+        activeSgr.splice(0, activeSgr.length, ...breakPoint.activeSgr);
+        offset = breakPoint.offset;
+        currentLine = breakPoint.line;
+        pushLine(breakPoint.line, breakPoint.activeSgr);
+        continue;
+      }
+
+      pushLine();
+    }
+
+    currentLine += segment;
+    currentWidth += segmentWidth;
+    offset += segment.length;
+
+    if (/^\s+$/u.test(segment)) {
+      if (lineHasNonWhitespace) {
+        lastBreak = {
+          offset,
+          line: currentLine,
+          activeSgr: [...activeSgr],
+        };
+      }
+    } else {
+      lineHasNonWhitespace = true;
+    }
+  }
+
+  lines.push(currentLine);
+  return lines;
+}
+
+/**
  * Trunca uma string contendo códigos ANSI sem quebrar tags ou ultrapassar a largura da tela
  */
 export function truncateAnsi(str: string, maxWidth: number): string {
@@ -71,14 +155,13 @@ function padToWidth(text: string, width: number): string {
 
 /**
  * Visualizador interativo de terminal (TUI Pager) com buffer alternativo de tela,
- * rolagem perfeita sem quebras de linha e rodapé fixado rigidamente na base.
+ * quebra visual responsiva, rolagem e rodapé fixado rigidamente na base.
  */
 export async function runInteractiveViewer(options: InteractiveOptions): Promise<void> {
   const { fileName, fileSize, renderedLines, tableOfContents } = options;
   const displayFileName = fileName.replace(/[\u0000-\u001F\u007F-\u009F]/g, "�");
-  const totalLines = renderedLines.length;
 
-  if (totalLines === 0 || !process.stdout.isTTY || !process.stdin.isTTY) {
+  if (renderedLines.length === 0 || !process.stdout.isTTY || !process.stdin.isTTY) {
     for (const line of renderedLines) {
       console.log(line);
     }
@@ -97,6 +180,9 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
   let showTocOverlay = false;
   let tocSelectedIndex = 0;
   let tocScrollTop = 0;
+  let visualLines: { text: string; sourceLineIndex: number }[] = [];
+  let sourceToFirstVisualLine: number[] = [];
+  let layoutWidth = 0;
 
   const getTerminalRows = () => process.stdout.rows || 24;
   const getTerminalCols = () => process.stdout.columns || 80;
@@ -105,18 +191,41 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
     return Math.max(1, getTerminalRows() - 1);
   }
 
+  function rebuildVisualLines(width: number): void {
+    if (layoutWidth === width && visualLines.length > 0) return;
+
+    const previousTopSource = visualLines[scrollTop]?.sourceLineIndex ?? 0;
+    const nextVisualLines: { text: string; sourceLineIndex: number }[] = [];
+    const nextSourceMap: number[] = [];
+
+    renderedLines.forEach((line, sourceLineIndex) => {
+      nextSourceMap[sourceLineIndex] = nextVisualLines.length;
+      for (const wrappedLine of wrapAnsi(line, width)) {
+        nextVisualLines.push({ text: wrappedLine, sourceLineIndex });
+      }
+    });
+
+    visualLines = nextVisualLines;
+    sourceToFirstVisualLine = nextSourceMap;
+    layoutWidth = width;
+    scrollTop = sourceToFirstVisualLine[previousTopSource] ?? 0;
+  }
+
   function getMaxScroll(): number {
-    return Math.max(0, totalLines - getContentHeight());
+    return Math.max(0, visualLines.length - getContentHeight());
   }
 
   function scrollToLine(lineIndex: number, contextLines = 0): void {
-    scrollTop = Math.min(getMaxScroll(), Math.max(0, lineIndex - contextLines));
+    const visualLineIndex = sourceToFirstVisualLine[lineIndex] ?? 0;
+    scrollTop = Math.min(getMaxScroll(), Math.max(0, visualLineIndex - contextLines));
   }
 
   function renderScreen() {
     const totalRows = getTerminalRows();
     const totalCols = getTerminalCols();
     const contentHeight = Math.max(1, totalRows - 1); // Exatamente 1 linha reservada para o rodapé
+    rebuildVisualLines(totalCols);
+    const totalLines = visualLines.length;
     scrollTop = Math.min(scrollTop, Math.max(0, totalLines - contentHeight));
 
     let buffer = "";
@@ -139,8 +248,9 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
       buffer += `\x1B[${row};1H\x1B[2K`; // Move para linha exata e limpa a linha
 
       if (lineIndex < totalLines) {
-        const line = renderedLines[lineIndex] || "";
-        if (searchQuery && searchMatches.includes(lineIndex)) {
+        const visualLine = visualLines[lineIndex];
+        const line = visualLine?.text || "";
+        if (searchQuery && visualLine && searchMatches.includes(visualLine.sourceLineIndex)) {
           const plain = padToWidth(stripAnsi(line), totalCols);
           buffer += pc.bgYellow(pc.black(plain));
         } else {
@@ -400,7 +510,7 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
 
       const totalRows = getTerminalRows();
       const contentHeight = Math.max(1, totalRows - 1);
-      const maxScroll = Math.max(0, totalLines - contentHeight);
+      const maxScroll = Math.max(0, visualLines.length - contentHeight);
 
       if (str === "q" || (key && key.name === "escape")) {
         finish();

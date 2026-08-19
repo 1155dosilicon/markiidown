@@ -35,6 +35,7 @@
   "author": "Eli / MarkiiDown Team",
   "license": "GPL-3.0-or-later",
   "dependencies": {
+    "cli-highlight": "^2.1.11",
     "highlight.js": "^11.11.1",
     "marked": "^15.0.7",
     "marked-highlight": "^2.2.1",
