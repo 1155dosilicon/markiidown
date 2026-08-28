@@ -1,15 +1,16 @@
 #!/usr/bin/env bun
 import { existsSync, lstatSync, mkdirSync, statSync } from "node:fs";
-import { dirname, extname, resolve } from "node:path";
+import { dirname, extname, isAbsolute, resolve } from "node:path";
 import pc from "picocolors";
 import { parseCliArgs } from "./cli.ts";
-import { convertMarkdownToStaticHtml } from "./html-template.ts";
+import { runInteractiveEditor } from "./editor.ts";
+import { convertFileToStaticHtml } from "./html-template.ts";
 import { getInstalledExePath, installMarkiiDown, isRunningFromBunRuntime, uninstallMarkiiDown } from "./installer.ts";
 import { openInteractiveViewer, printDirectToTerminal, watchFileInTerminal } from "./terminal.ts";
 import { printBanner, resolveTargetFile } from "./utils.ts";
 import { registerWindowsContextMenu, unregisterWindowsContextMenu } from "./windows-registry.ts";
 
-const VERSION = "1.1.0";
+const VERSION = "2.0.0";
 
 /**
  * Exibe a mensagem de ajuda detalhada em Português (pt-BR)
@@ -18,13 +19,22 @@ function showHelp(): void {
   printBanner();
   console.log(`
 ${pc.bold(pc.yellow("USO:"))}
-  markiidown [arquivo.md|arquivo.markdown] [opções]
+  markiidown [arquivo|pasta] [opções]
+
+${pc.bold(pc.yellow("FORMATOS SUPORTADOS:"))}
+  • Markdown (${pc.cyan(".md, .markdown")}) - com suporte a tabelas, alertas, emoji e formatação rica
+  • Código-Fonte (${pc.cyan("TypeScript, JavaScript, Python, Rust, Go, C/C++, HTML, CSS, SQL, Shell, etc.")})
+  • Configurações (${pc.cyan("JSON, YAML, TOML, XML, INI, ENV, Dockerfile, etc.")})
+  • Texto Plano e Logs (${pc.cyan(".txt, .log, .csv")})
 
 ${pc.bold(pc.yellow("OPÇÕES PRINCIPAIS:"))}
-  -i, --interactive       Abre no leitor interativo de terminal com rolagem e busca (Padrão)
-  -p, --print             Imprime todo o conteúdo diretamente no terminal (sem paginação)
+  -i, --interactive       Abre no leitor interativo de terminal com rolagem, busca e atalho para editor (Padrão)
+  -E, --edit              Abre diretamente no editor interativo de terminal com salvamento via Ctrl+S
+  -p, --print             Imprime todo o conteúdo diretamente no terminal (com syntax highlighting)
   -w, --watch             Monitora alterações no arquivo em tempo real
-  -e, --export <saida>    Exporta para um arquivo .html/.htm com estilos embutidos
+  -r, --raw               Exibe o arquivo sem formatação/parsers
+  -n, --numbers           Exibe numeração de linhas
+  -e, --export <saida>    Exporta para um arquivo .html/.htm com estilos embutidos e tema alternável
 
 ${pc.bold(pc.yellow("INSTALAÇÃO & INTEGRAÇÃO COM WINDOWS (SEM ADMIN):"))}
       --install           Instala em %LOCALAPPDATA%\\MarkiiDown, adiciona ao PATH e menu do Windows
@@ -36,22 +46,32 @@ ${pc.bold(pc.yellow("INFORMAÇÕES:"))}
   -h, --help              Exibe esta mensagem de ajuda
   -v, --version           Exibe a versão do MarkiiDown
 
-${pc.bold(pc.yellow("TECLAS DO MODO INTERATIVO:"))}
+${pc.bold(pc.yellow("TECLAS NO MODO LEITOR:"))}
+  ${pc.cyan("e")}                Abrir no Editor Interativo para alterar o arquivo
   ${pc.cyan("↓ / j / Enter")}    Rolar para baixo
   ${pc.cyan("↑ / k")}            Rolar para cima
   ${pc.cyan("Espaço / PgDown")}  Avançar uma página
   ${pc.cyan("PgUp")}             Voltar uma página
   ${pc.cyan("/")}                Buscar palavra/termo no documento
-  ${pc.cyan("t")}                Abrir Sumário (navegue com ↑/↓ e Enter)
+  ${pc.cyan("n / N")}            Próxima / Anterior ocorrência
+  ${pc.cyan("t")}                Abrir Sumário ou Símbolos de Código (navegue com ↑/↓ e Enter)
   ${pc.cyan("?")}                Ajuda de teclas
   ${pc.cyan("q / Esc")}          Sair do leitor
 
+${pc.bold(pc.yellow("TECLAS NO MODO EDITOR:"))}
+  ${pc.cyan("Ctrl+S")}           Salvar alterações no disco
+  ${pc.cyan("Esc / Ctrl+Q")}     Sair (pede confirmação se houver alterações não salvas)
+  ${pc.cyan("Ctrl+Z / Ctrl+Y")}  Desfazer / Refazer
+  ${pc.cyan("Tab")}              Inserir indentação (2 espaços)
+
 ${pc.bold(pc.yellow("EXEMPLOS:"))}
-  ${pc.cyan("markiidown")}                       Abre o README.md da pasta no leitor interativo
-  ${pc.cyan("markiidown documento.md")}          Abre "documento.md" no leitor interativo
-  ${pc.cyan("markiidown --install")}             Instala no Windows no diretório do usuário
-  ${pc.cyan("markiidown notas.md --print")}      Imprime o Markdown formatado direto na tela
+  ${pc.cyan("markiidown")}                       Abre o arquivo principal da pasta no leitor
+  ${pc.cyan("markiidown script.ts")}             Abre "script.ts" com syntax highlighting no leitor
+  ${pc.cyan("markiidown main.py --edit")}        Abre "main.py" diretamente no editor de terminal
+  ${pc.cyan("markiidown config.json --print")}   Imprime "config.json" formatado e colorido
   ${pc.cyan("markiidown notas.md --watch")}      Atualiza a exibição no terminal ao salvar
+  ${pc.cyan("markiidown codigo.rs -e app.html")} Exporta o arquivo para HTML estático estilizado
+  ${pc.cyan("markiidown --install")}             Instala no Windows e integra ao menu do Explorador
 `);
 }
 
@@ -92,30 +112,53 @@ async function main(): Promise<void> {
   let mode = options.mode;
 
   // Se a saída padrão não for um terminal TTY interativo (ex: pipe), força modo print
-  if (!process.stdout.isTTY && mode === "interactive") {
+  if (!process.stdout.isTTY && (mode === "interactive" || mode === "edit")) {
     mode = "print";
   }
 
-  // Resolve o arquivo alvo
-  const resolvedPath = resolveTargetFile(options.targetFile);
+  // Resolve o arquivo alvo (permite novos caminhos em modo de edição)
+  let resolvedPath = resolveTargetFile(options.targetFile, mode === "edit");
+
+  // Se o usuário passou um arquivo inexistente no modo interativo padrão,
+  // abre no editor para criar o arquivo (comportamento estilo Bloco de Notas)
+  if (!resolvedPath && options.targetFile && mode === "interactive") {
+    const candidatePath = isAbsolute(options.targetFile)
+      ? options.targetFile
+      : resolve(process.cwd(), options.targetFile);
+    if (existsSync(dirname(candidatePath))) {
+      resolvedPath = candidatePath;
+      mode = "edit";
+    }
+  }
+
+  // Se o usuário chamou `markiidown -E` sem especificar arquivo e não há arquivo legível na pasta, inicia novo.md
+  if (!resolvedPath && !options.targetFile && mode === "edit") {
+    resolvedPath = resolve(process.cwd(), "novo.md");
+  }
 
   if (!resolvedPath) {
     printBanner();
     const detail = options.targetFile
-      ? `O caminho informado não existe, não é um arquivo Markdown ou não contém arquivos Markdown: ${options.targetFile}`
-      : "Nenhum arquivo Markdown (.md ou .markdown) encontrado para visualização.";
+      ? `O caminho informado não existe ou não pôde ser aberto: ${options.targetFile}`
+      : "Nenhum arquivo legível encontrado na pasta para visualização.";
     console.error(pc.red(`❌ ${detail}`));
-    console.log(pc.yellow(`Dica: Crie um arquivo README.md ou informe um caminho válido:`));
-    console.log(pc.cyan(`  markiidown meu-arquivo.md\n`));
+    console.log(pc.yellow(`Dica: Informe um arquivo ou caminho válido:`));
+    console.log(pc.cyan(`  markiidown meu-arquivo.ts\n`));
     process.exit(1);
+  }
+
+  // Modo Editor Direto
+  if (mode === "edit") {
+    await runInteractiveEditor({ filePath: resolvedPath });
+    return;
   }
 
   // Modo Exportação Estática
   if (mode === "export") {
     printBanner();
     const file = Bun.file(resolvedPath);
-    const rawMarkdown = await file.text();
-    const fullHtml = convertMarkdownToStaticHtml(rawMarkdown, resolvedPath);
+    const rawText = await file.text();
+    const fullHtml = convertFileToStaticHtml(rawText, resolvedPath);
     const destination = resolve(process.cwd(), options.exportPath!);
     const outputExtension = extname(destination).toLowerCase();
     if (outputExtension !== ".html" && outputExtension !== ".htm") {
@@ -140,21 +183,22 @@ async function main(): Promise<void> {
 
   // Modo Watch
   if (mode === "watch") {
-    await watchFileInTerminal(resolvedPath);
+    await watchFileInTerminal(resolvedPath, { raw: options.raw, lineNumbers: options.lineNumbers });
     return;
   }
 
   // Modo Impressão Direta
   if (mode === "print") {
-    await printDirectToTerminal(resolvedPath);
+    await printDirectToTerminal(resolvedPath, { raw: options.raw, lineNumbers: options.lineNumbers });
     return;
   }
 
   // Modo Interativo (Padrão)
-  await openInteractiveViewer(resolvedPath);
+  await openInteractiveViewer(resolvedPath, { raw: options.raw, lineNumbers: options.lineNumbers });
 }
 
 main().catch((err) => {
   console.error(pc.red(`\n❌ Erro:`), err.message || err);
   process.exit(1);
 });
+

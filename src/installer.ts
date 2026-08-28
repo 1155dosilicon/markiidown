@@ -54,8 +54,20 @@ async function installExecutable(targetExe: string): Promise<boolean> {
       }
 
       console.log(pc.cyan("⏳ Compilando o executável standalone antes da instalação..."));
+      const iconFile = resolve(import.meta.dir, "..", "assets", "icon.ico");
       const buildArgs = [currentExe, "build", "--compile", "--minify"];
-      if (process.platform === "win32") buildArgs.push("--target=bun-windows-x64");
+      if (process.platform === "win32") {
+        buildArgs.push("--target=bun-windows-x64");
+        if (existsSync(iconFile)) {
+          buildArgs.push(`--windows-icon=${iconFile}`);
+        }
+        buildArgs.push(
+          "--windows-title=MarkiiDown",
+          "--windows-description=Leitor e Editor Universal de Arquivos e Markdown",
+          "--windows-publisher=MarkiiDown",
+          "--windows-version=2.0.0.0"
+        );
+      }
       buildArgs.push(entryPoint, "--outfile", targetExe);
 
       const buildProc = Bun.spawn(buildArgs, { stdout: "inherit", stderr: "inherit" });
@@ -65,15 +77,31 @@ async function installExecutable(targetExe: string): Promise<boolean> {
         return false;
       }
 
-      console.log(pc.green(`✅ Executável compilado em: ${targetExe}`));
-      return true;
-    }
-
-    if (normalizePathForComparison(currentExe) !== normalizePathForComparison(targetExe)) {
+      console.log(pc.green(`✅ Executável compilado com ícone em: ${targetExe}`));
+    } else if (normalizePathForComparison(currentExe) !== normalizePathForComparison(targetExe)) {
       copyFileSync(currentExe, targetExe);
       console.log(pc.green(`✅ Binário copiado para: ${targetExe}`));
     } else {
       console.log(pc.yellow("ℹ️ O executável já está rodando a partir do diretório de instalação."));
+    }
+
+    // Copia o arquivo de ícone (.ico) dedicado para a pasta de instalação se existir
+    const projectRoot = resolve(import.meta.dir, "..");
+    const candidateIcons = [
+      join(projectRoot, "assets", "icon.ico"),
+      join(process.cwd(), "assets", "icon.ico"),
+      join(resolve(currentExe, ".."), "assets", "icon.ico"),
+      join(resolve(currentExe, ".."), "markiidown.ico"),
+    ];
+
+    const targetIcon = join(resolve(targetExe, ".."), "markiidown.ico");
+    for (const src of candidateIcons) {
+      if (existsSync(src)) {
+        try {
+          copyFileSync(src, targetIcon);
+          break;
+        } catch {}
+      }
     }
     return true;
   } catch (error) {

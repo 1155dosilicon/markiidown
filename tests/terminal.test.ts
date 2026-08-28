@@ -128,4 +128,39 @@ describe("getRenderedMarkdownLines", () => {
       expectTokenFullyYellow(line ?? "", "--install", 8);
     }
   });
+
+  test("renderiza arquivos de código com numeração de linha e extrai símbolos para TOC", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "markiidown-terminal-"));
+    temporaryDirectories.push(directory);
+    const tsFile = join(directory, "example.ts");
+    writeFileSync(
+      tsFile,
+      "export function calculateTotal(items: number[]): number {\n  return items.reduce((a, b) => a + b, 0);\n}\n\nexport class Store {\n  name: string = 'test';\n}"
+    );
+
+    const { getRenderedFileLines } = await import("../src/terminal.ts");
+    const result = await getRenderedFileLines(tsFile);
+
+    expect(result.typeInfo.language).toBe("typescript");
+    expect(result.lines.length).toBe(7);
+    expect(stripAnsi(result.lines[0])).toContain("1 │");
+    expect(result.tableOfContents.length).toBe(2);
+    expect(result.tableOfContents[0].title).toContain("calculateTotal");
+    expect(result.tableOfContents[1].title).toContain("Store");
+  });
+
+  test("avisa com segurança ao tentar renderizar arquivo binário", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "markiidown-terminal-"));
+    temporaryDirectories.push(directory);
+    const binFile = join(directory, "dados.bin");
+    const binBuffer = Buffer.from([0x00, 0xff, 0xfe, 0x00, 0x12, 0x34]);
+    writeFileSync(binFile, binBuffer);
+
+    const { getRenderedFileLines } = await import("../src/terminal.ts");
+    const result = await getRenderedFileLines(binFile);
+
+    expect(result.typeInfo.isBinary).toBe(true);
+    expect(result.lines.join("\n")).toContain("arquivo binário");
+  });
 });
+

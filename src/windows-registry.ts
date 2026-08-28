@@ -1,6 +1,20 @@
 import { existsSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import pc from "picocolors";
+
+/**
+ * Notifica o Windows Explorer para recarregar associações e ícones imediatamente
+ */
+export async function notifyWindowsShell(): Promise<void> {
+  try {
+    const proc = Bun.spawn(["ie4uinit.exe", "-show"], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    // Não bloqueia caso o ie4uinit demore para responder no Windows
+    proc.unref();
+  } catch {}
+}
 
 /**
  * Registra o MarkiiDown no menu de contexto do Windows e na lista "Abrir com..."
@@ -25,15 +39,31 @@ export async function registerWindowsContextMenu(customExePath?: string): Promis
     return false;
   }
 
+  const exeDir = dirname(exePath);
+  const dedicatedIco = join(exeDir, "markiidown.ico");
+  const assetIco = resolve(import.meta.dir, "..", "assets", "icon.ico");
+  const iconTarget = existsSync(dedicatedIco)
+    ? dedicatedIco
+    : existsSync(assetIco)
+    ? assetIco
+    : `${exePath},0`;
+
   console.log(pc.cyan("\n🔧 Registrando MarkiiDown no Windows..."));
   console.log(`${pc.dim("Caminho do Executável:")} ${pc.white(exePath)}`);
+  console.log(`${pc.dim("Caminho do Ícone:")}      ${pc.white(iconTarget)}`);
 
-  const commands = [
-    // 1. Registra no menu de contexto de arquivos .md (SystemFileAssociations)
+  const supportedExtensions = [
+    ".md", ".markdown", ".txt", ".json", ".js", ".jsx", ".ts", ".tsx",
+    ".py", ".rs", ".go", ".c", ".cpp", ".h", ".hpp", ".html", ".css",
+    ".yaml", ".yml", ".toml", ".sh", ".bash", ".sql", ".xml", ".log"
+  ];
+
+  const commands: string[][] = [
+    // 1. Menu de contexto universal para qualquer arquivo (*)
     [
       "reg",
       "add",
-      "HKCU\\Software\\Classes\\SystemFileAssociations\\.md\\shell\\MarkiiDown",
+      "HKCU\\Software\\Classes\\*\\shell\\MarkiiDown",
       "/ve",
       "/d",
       "Abrir com MarkiiDown",
@@ -42,34 +72,24 @@ export async function registerWindowsContextMenu(customExePath?: string): Promis
     [
       "reg",
       "add",
-      "HKCU\\Software\\Classes\\SystemFileAssociations\\.md\\shell\\MarkiiDown\\command",
+      "HKCU\\Software\\Classes\\*\\shell\\MarkiiDown",
+      "/v",
+      "Icon",
+      "/d",
+      iconTarget,
+      "/f",
+    ],
+    [
+      "reg",
+      "add",
+      "HKCU\\Software\\Classes\\*\\shell\\MarkiiDown\\command",
       "/ve",
       "/d",
       `"${exePath}" "%1"`,
       "/f",
     ],
 
-    // 2. Registra no menu de contexto geral de arquivos Markdown (*.markdown)
-    [
-      "reg",
-      "add",
-      "HKCU\\Software\\Classes\\SystemFileAssociations\\.markdown\\shell\\MarkiiDown",
-      "/ve",
-      "/d",
-      "Abrir com MarkiiDown",
-      "/f",
-    ],
-    [
-      "reg",
-      "add",
-      "HKCU\\Software\\Classes\\SystemFileAssociations\\.markdown\\shell\\MarkiiDown\\command",
-      "/ve",
-      "/d",
-      `"${exePath}" "%1"`,
-      "/f",
-    ],
-
-    // 3. Registra como aplicativo reconhecido na lista "Abrir com..." do Windows
+    // 2. Registra como aplicativo reconhecido na lista "Abrir com..." do Windows
     [
       "reg",
       "add",
@@ -77,7 +97,26 @@ export async function registerWindowsContextMenu(customExePath?: string): Promis
       "/v",
       "FriendlyAppName",
       "/d",
-      "MarkiiDown (Leitor de Markdown)",
+      "MarkiiDown (Leitor & Editor Universal)",
+      "/f",
+    ],
+    [
+      "reg",
+      "add",
+      "HKCU\\Software\\Classes\\Applications\\markiidown.exe",
+      "/v",
+      "ApplicationCompany",
+      "/d",
+      "MarkiiDown",
+      "/f",
+    ],
+    [
+      "reg",
+      "add",
+      "HKCU\\Software\\Classes\\Applications\\markiidown.exe\\DefaultIcon",
+      "/ve",
+      "/d",
+      iconTarget,
       "/f",
     ],
     [
@@ -92,9 +131,29 @@ export async function registerWindowsContextMenu(customExePath?: string): Promis
     [
       "reg",
       "add",
-      "HKCU\\Software\\Classes\\Applications\\markiidown.exe\\SupportedTypes",
+      "HKCU\\Software\\Classes\\Applications\\markiidown.exe\\shell\\edit\\command",
+      "/ve",
+      "/d",
+      `"${exePath}" "%1" --edit`,
+      "/f",
+    ],
+
+    // 3. Menu "Novo" (New) do Windows Explorer para criar arquivos Markdown (.md)
+    [
+      "reg",
+      "add",
+      "HKCU\\Software\\Classes\\.md",
+      "/ve",
+      "/d",
+      "MarkiiDown.Document",
+      "/f",
+    ],
+    [
+      "reg",
+      "add",
+      "HKCU\\Software\\Classes\\.md\\ShellNew",
       "/v",
-      ".md",
+      "NullFile",
       "/d",
       "",
       "/f",
@@ -102,14 +161,168 @@ export async function registerWindowsContextMenu(customExePath?: string): Promis
     [
       "reg",
       "add",
-      "HKCU\\Software\\Classes\\Applications\\markiidown.exe\\SupportedTypes",
+      "HKCU\\Software\\Classes\\.markdown",
+      "/ve",
+      "/d",
+      "MarkiiDown.Document",
+      "/f",
+    ],
+    [
+      "reg",
+      "add",
+      "HKCU\\Software\\Classes\\.markdown\\ShellNew",
       "/v",
-      ".markdown",
+      "NullFile",
       "/d",
       "",
       "/f",
     ],
+    [
+      "reg",
+      "add",
+      "HKCU\\Software\\Classes\\MarkiiDown.Document",
+      "/ve",
+      "/d",
+      "Documento Markdown",
+      "/f",
+    ],
+    [
+      "reg",
+      "add",
+      "HKCU\\Software\\Classes\\MarkiiDown.Document",
+      "/v",
+      "FriendlyTypeName",
+      "/d",
+      "Documento Markdown",
+      "/f",
+    ],
+    [
+      "reg",
+      "add",
+      "HKCU\\Software\\Classes\\MarkiiDown.Document\\DefaultIcon",
+      "/ve",
+      "/d",
+      iconTarget,
+      "/f",
+    ],
+    [
+      "reg",
+      "add",
+      "HKCU\\Software\\Classes\\MarkiiDown.Document\\shell\\open\\command",
+      "/ve",
+      "/d",
+      `"${exePath}" "%1"`,
+      "/f",
+    ],
+    [
+      "reg",
+      "add",
+      "HKCU\\Software\\Classes\\MarkiiDown.Document\\shell\\edit\\command",
+      "/ve",
+      "/d",
+      `"${exePath}" "%1" --edit`,
+      "/f",
+    ],
+
+    // 4. Menu de Contexto ao clicar com botão direito no fundo de pastas e Desktop
+    [
+      "reg",
+      "add",
+      "HKCU\\Software\\Classes\\Directory\\Background\\shell\\MarkiiDown",
+      "/ve",
+      "/d",
+      "Abrir pasta com MarkiiDown",
+      "/f",
+    ],
+    [
+      "reg",
+      "add",
+      "HKCU\\Software\\Classes\\Directory\\Background\\shell\\MarkiiDown",
+      "/v",
+      "Icon",
+      "/d",
+      iconTarget,
+      "/f",
+    ],
+    [
+      "reg",
+      "add",
+      "HKCU\\Software\\Classes\\Directory\\Background\\shell\\MarkiiDown\\command",
+      "/ve",
+      "/d",
+      `"${exePath}" "%V"`,
+      "/f",
+    ],
+    [
+      "reg",
+      "add",
+      "HKCU\\Software\\Classes\\Directory\\Background\\shell\\MarkiiDownNew",
+      "/ve",
+      "/d",
+      "Novo arquivo com MarkiiDown",
+      "/f",
+    ],
+    [
+      "reg",
+      "add",
+      "HKCU\\Software\\Classes\\Directory\\Background\\shell\\MarkiiDownNew",
+      "/v",
+      "Icon",
+      "/d",
+      iconTarget,
+      "/f",
+    ],
+    [
+      "reg",
+      "add",
+      "HKCU\\Software\\Classes\\Directory\\Background\\shell\\MarkiiDownNew\\command",
+      "/ve",
+      "/d",
+      `"${exePath}" "%V\\novo.md" --edit`,
+      "/f",
+    ],
+    [
+      "reg",
+      "add",
+      "HKCU\\Software\\Classes\\DesktopBackground\\shell\\MarkiiDownNew",
+      "/ve",
+      "/d",
+      "Novo arquivo com MarkiiDown",
+      "/f",
+    ],
+    [
+      "reg",
+      "add",
+      "HKCU\\Software\\Classes\\DesktopBackground\\shell\\MarkiiDownNew",
+      "/v",
+      "Icon",
+      "/d",
+      iconTarget,
+      "/f",
+    ],
+    [
+      "reg",
+      "add",
+      "HKCU\\Software\\Classes\\DesktopBackground\\shell\\MarkiiDownNew\\command",
+      "/ve",
+      "/d",
+      `"${exePath}" --edit`,
+      "/f",
+    ],
   ];
+
+  for (const ext of supportedExtensions) {
+    commands.push([
+      "reg",
+      "add",
+      "HKCU\\Software\\Classes\\Applications\\markiidown.exe\\SupportedTypes",
+      "/v",
+      ext,
+      "/d",
+      "",
+      "/f",
+    ]);
+  }
 
   let success = true;
   for (const cmd of commands) {
@@ -122,11 +335,16 @@ export async function registerWindowsContextMenu(customExePath?: string): Promis
     }
   }
 
+  // Notifica o Windows Explorer para atualizar ícones imediatamente
+  await notifyWindowsShell();
+
   if (success) {
     console.log(pc.green("\n🎉 MarkiiDown registrado com sucesso no Windows!"));
     console.log(`\nAgora você pode:`);
-    console.log(`  1. Clicar com o ${pc.bold("botão direito")} em qualquer arquivo ${pc.cyan(".md")} e escolher ${pc.bold('"Abrir com MarkiiDown"')}.`);
-    console.log(`  2. Ir em ${pc.bold('"Abrir com..."')} -> ${pc.bold("MarkiiDown")} para definir como aplicativo padrão.`);
+    console.log(`  1. Clicar com o ${pc.bold("botão direito")} em qualquer pasta/espaço vazio -> ${pc.bold('"Novo" -> "Documento Markdown"')}.`);
+    console.log(`  2. Clicar com o ${pc.bold("botão direito")} em qualquer arquivo e escolher ${pc.bold('"Abrir com MarkiiDown"')}.`);
+    console.log(`  3. Clicar com o ${pc.bold("botão direito")} no fundo da pasta -> ${pc.bold('"Novo arquivo com MarkiiDown"')}.`);
+    console.log(`  4. Ir em ${pc.bold('"Abrir com..."')} -> ${pc.bold("MarkiiDown")} para definir como aplicativo padrão.`);
   }
 
   return success;
@@ -144,8 +362,13 @@ export async function unregisterWindowsContextMenu(): Promise<boolean> {
   console.log(pc.cyan("\n🗑️ Removendo MarkiiDown do menu de contexto do Windows..."));
 
   const keysToDelete = [
-    "HKCU\\Software\\Classes\\SystemFileAssociations\\.md\\shell\\MarkiiDown",
-    "HKCU\\Software\\Classes\\SystemFileAssociations\\.markdown\\shell\\MarkiiDown",
+    "HKCU\\Software\\Classes\\*\\shell\\MarkiiDown",
+    "HKCU\\Software\\Classes\\.md\\ShellNew",
+    "HKCU\\Software\\Classes\\.markdown\\ShellNew",
+    "HKCU\\Software\\Classes\\MarkiiDown.Document",
+    "HKCU\\Software\\Classes\\Directory\\Background\\shell\\MarkiiDown",
+    "HKCU\\Software\\Classes\\Directory\\Background\\shell\\MarkiiDownNew",
+    "HKCU\\Software\\Classes\\DesktopBackground\\shell\\MarkiiDownNew",
     "HKCU\\Software\\Classes\\Applications\\markiidown.exe",
   ];
 
@@ -158,6 +381,9 @@ export async function unregisterWindowsContextMenu(): Promise<boolean> {
     if ((await proc.exited) !== 0) success = false;
   }
 
+  // Notifica o Windows Explorer para atualizar ícones imediatamente
+  await notifyWindowsShell();
+
   if (success) {
     console.log(pc.green("✅ Registro do MarkiiDown removido com sucesso do Windows!\n"));
   } else {
@@ -165,3 +391,5 @@ export async function unregisterWindowsContextMenu(): Promise<boolean> {
   }
   return success;
 }
+
+

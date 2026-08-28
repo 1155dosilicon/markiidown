@@ -24,25 +24,35 @@ async function buildExecutable(): Promise<void> {
   console.log(pc.cyan("\n⏳ Compilando executável com Bun, aguarde...\n"));
 
   const startTime = performance.now();
+  const iconPath = join(rootDir, "assets", "icon.ico");
+
+  const buildArgs = [
+    "bun",
+    "build",
+    "--compile",
+    "--minify",
+    "--target=bun-windows-x64",
+    entryPoint,
+    "--outfile",
+    outfile,
+  ];
+
+  if (existsSync(iconPath)) {
+    buildArgs.push(`--windows-icon=${iconPath}`);
+  }
+  buildArgs.push(
+    "--windows-title=MarkiiDown",
+    "--windows-description=Leitor e Editor Universal de Arquivos e Markdown",
+    "--windows-publisher=MarkiiDown",
+    "--windows-version=2.0.0.0"
+  );
 
   // Executa o comando de compilação do Bun
-  const proc = Bun.spawn(
-    [
-      "bun",
-      "build",
-      "--compile",
-      "--minify",
-      "--target=bun-windows-x64",
-      entryPoint,
-      "--outfile",
-      outfile,
-    ],
-    {
-      cwd: rootDir,
-      stdout: "inherit",
-      stderr: "inherit",
-    }
-  );
+  const proc = Bun.spawn(buildArgs, {
+    cwd: rootDir,
+    stdout: "inherit",
+    stderr: "inherit",
+  });
 
   const exitCode = await proc.exited;
   const elapsedSeconds = ((performance.now() - startTime) / 1000).toFixed(2);

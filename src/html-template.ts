@@ -2,7 +2,7 @@ import { Marked, Renderer, TextRenderer } from "marked";
 import { markedHighlight } from "marked-highlight";
 import hljs from "highlight.js";
 import { basename } from "node:path";
-import { calculateReadingTime, formatBytes } from "./utils.ts";
+import { calculateReadingTime, detectFileType, formatBytes } from "./utils.ts";
 
 const htmlMarked = new Marked();
 
@@ -44,6 +44,183 @@ function sanitizeUrl(url: string): string | null {
   }
 
   return url;
+}
+
+/**
+ * Converte qualquer arquivo (Markdown, Código, Texto) para HTML estático com tema escuro/claro
+ */
+export function convertFileToStaticHtml(rawText: string, filePath: string): string {
+  const typeInfo = detectFileType(filePath);
+  if (typeInfo.type === "markdown") {
+    return convertMarkdownToStaticHtml(rawText, filePath);
+  }
+
+  const fileName = basename(filePath);
+  const safeFileName = escapeHtml(fileName);
+  const { words, minutes } = calculateReadingTime(rawText);
+  const sizeFormatted = formatBytes(new TextEncoder().encode(rawText).length);
+
+  const lines = rawText.split(/\r?\n/);
+  const totalDigits = Math.max(2, String(lines.length).length);
+  const toc: { id: string; text: string; level: number }[] = [];
+
+  const codeSymbolRegex =
+    /^(?:export\s+)?(?:async\s+)?(?:pub(?:\([^)]*\))?\s+)?(?:function|func|fn|def|class|struct|interface|type|enum|trait|impl|const)\s+([A-Za-z0-9_$]+)/i;
+
+  lines.forEach((line, index) => {
+    const trimmed = line.trim();
+    const symbolMatch = trimmed.match(codeSymbolRegex);
+    if (symbolMatch && symbolMatch[1]) {
+      const id = `sym-${index + 1}`;
+      toc.push({
+        id,
+        text: escapeHtml(`${symbolMatch[0].split(/\s+/)[0]} ${symbolMatch[1]}`),
+        level: 1,
+      });
+    }
+  });
+
+  const lang = typeInfo.language && hljs.getLanguage(typeInfo.language) ? typeInfo.language : "plaintext";
+  let highlightedHtml = "";
+  try {
+    highlightedHtml = hljs.highlight(rawText, { language: lang, ignoreIllegals: true }).value;
+  } catch {
+    highlightedHtml = escapeHtml(rawText);
+  }
+
+  // Divide o código realçado em linhas numeradas
+  const highlightedLines = highlightedHtml.split(/\r?\n/);
+  const numberedCodeHtml = highlightedLines
+    .map((line, idx) => {
+      const lineNum = idx + 1;
+      const numStr = String(lineNum).padStart(totalDigits, " ");
+      return `<div class="code-line" id="L${lineNum}"><span class="line-num">${numStr}</span><span class="line-content">${line || " "}</span></div>`;
+    })
+    .join("\n");
+
+  const tocHtml = toc.length
+    ? toc
+        .map(
+          (item) =>
+            `<a href="#${item.id}" class="toc-link level-${item.level}">
+              ${item.text}
+            </a>`
+        )
+        .join("\n")
+    : '<div style="color:#8b949e;font-size:0.85rem;">Nenhum símbolo detectado</div>';
+
+  return `<!DOCTYPE html>
+<html lang="pt-BR" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${safeFileName} - MarkiiDown</title>
+  <style>
+    :root {
+      --bg-primary: #0d1117;
+      --bg-secondary: #161b22;
+      --bg-tertiary: #21262d;
+      --border-color: #30363d;
+      --text-main: #c9d1d9;
+      --text-muted: #8b949e;
+      --text-bright: #f0f6fc;
+      --accent-color: #58a6ff;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+    [data-theme="light"] {
+      --bg-primary: #ffffff;
+      --bg-secondary: #f6f8fa;
+      --bg-tertiary: #eaedf0;
+      --border-color: #d0d7de;
+      --text-main: #24292f;
+      --text-muted: #57606a;
+      --text-bright: #0969da;
+      --accent-color: #0969da;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: var(--font-sans);
+      background-color: var(--bg-primary);
+      color: var(--text-main);
+      line-height: 1.6;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+    header {
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border-color);
+      padding: 12px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    .header-title { font-weight: 700; color: var(--text-bright); display: flex; align-items: center; gap: 8px; }
+    .header-stats { font-size: 0.85rem; color: var(--text-muted); display: flex; gap: 12px; }
+    .btn { background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-main); padding: 5px 10px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+    .btn:hover { border-color: var(--accent-color); color: var(--text-bright); }
+    .container { display: flex; max-width: 1400px; margin: 0 auto; width: 100%; flex: 1; }
+    aside { width: 260px; border-right: 1px solid var(--border-color); padding: 24px 16px; background: var(--bg-secondary); }
+    .toc-title { font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); font-weight: 700; margin-bottom: 10px; }
+    .toc-link { display: block; color: var(--text-muted); text-decoration: none; font-size: 0.85rem; padding: 4px 6px; border-radius: 4px; }
+    .toc-link:hover { color: var(--accent-color); background: var(--bg-tertiary); }
+    main { flex: 1; padding: 24px; overflow-x: auto; }
+    .code-container { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px; font-family: var(--font-mono); font-size: 0.9rem; line-height: 1.5; overflow-x: auto; }
+    .code-line { display: flex; }
+    .line-num { width: 45px; text-align: right; color: var(--text-muted); user-select: none; padding-right: 16px; }
+    .line-content { flex: 1; white-space: pre; }
+    .hljs { color: #c9d1d9; }
+    .hljs-doctag, .hljs-keyword, .hljs-meta .hljs-keyword, .hljs-template-tag, .hljs-template-variable, .hljs-type, .hljs-variable.language_ { color: #ff7b72; }
+    .hljs-title, .hljs-title.class_, .hljs-title.class_.inherited__, .hljs-title.function_ { color: #d2a8ff; }
+    .hljs-attr, .hljs-attribute, .hljs-literal, .hljs-meta, .hljs-number, .hljs-operator, .hljs-selector-attr, .hljs-selector-class, .hljs-selector-id, .hljs-variable { color: #79c0ff; }
+    .hljs-meta .hljs-string, .hljs-regexp, .hljs-string { color: #a5d6ff; }
+    .hljs-built_in, .hljs-symbol { color: #ffa657; }
+    .hljs-code, .hljs-comment, .hljs-formula { color: #8b949e; }
+    [data-theme="light"] .hljs { color: #24292f; }
+    [data-theme="light"] .hljs-doctag, [data-theme="light"] .hljs-keyword, [data-theme="light"] .hljs-meta .hljs-keyword, [data-theme="light"] .hljs-template-tag, [data-theme="light"] .hljs-template-variable, [data-theme="light"] .hljs-type, [data-theme="light"] .hljs-variable.language_ { color: #cf222e; }
+    [data-theme="light"] .hljs-title, [data-theme="light"] .hljs-title.class_, [data-theme="light"] .hljs-title.class_.inherited__, [data-theme="light"] .hljs-title.function_ { color: #8250df; }
+    [data-theme="light"] .hljs-attr, [data-theme="light"] .hljs-attribute, [data-theme="light"] .hljs-literal, [data-theme="light"] .hljs-meta, [data-theme="light"] .hljs-number, [data-theme="light"] .hljs-operator, [data-theme="light"] .hljs-selector-attr, [data-theme="light"] .hljs-selector-class, [data-theme="light"] .hljs-selector-id, [data-theme="light"] .hljs-variable { color: #0550ae; }
+    [data-theme="light"] .hljs-meta .hljs-string, [data-theme="light"] .hljs-regexp, [data-theme="light"] .hljs-string { color: #0a3069; }
+    [data-theme="light"] .hljs-built_in, [data-theme="light"] .hljs-symbol { color: #953800; }
+    [data-theme="light"] .hljs-code, [data-theme="light"] .hljs-comment, [data-theme="light"] .hljs-formula { color: #6e7781; }
+    @media (max-width: 800px) { aside { display: none; } main { padding: 12px; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-title">📄 ${safeFileName} <span style="font-size:0.8rem;color:var(--text-muted);">(${escapeHtml(typeInfo.description)})</span></div>
+    <div class="header-stats">
+      <span>📊 ${sizeFormatted}</span>
+      <span>📝 ${words} palavras</span>
+      <span>⏱️ ~${minutes} min</span>
+      <button class="btn" onclick="toggleTheme()">🌙/☀️ Tema</button>
+      <button class="btn" onclick="window.print()">🖨️ Imprimir</button>
+    </div>
+  </header>
+  <div class="container">
+    <aside>
+      <div class="toc-title">Símbolos</div>
+      <nav>${tocHtml}</nav>
+    </aside>
+    <main>
+      <div class="code-container">
+        ${numberedCodeHtml}
+      </div>
+    </main>
+  </div>
+  <script>
+    function toggleTheme() {
+      const current = document.documentElement.getAttribute('data-theme');
+      const next = current === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+    }
+  </script>
+</body>
+</html>`;
 }
 
 /**
@@ -249,3 +426,4 @@ export function convertMarkdownToStaticHtml(rawMarkdown: string, filePath: strin
 </body>
 </html>`;
 }
+

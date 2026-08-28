@@ -1,0 +1,23 @@
+# Exemplo de arquivo YAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: markiidown-pod
+  labels:
+    app: reader-service
+    env: production
+spec:
+  containers:
+    - name: reader
+      image: markiidown:2.0.0
+      ports:
+        - containerPort: 8080
+      env:
+        - name: NODE_ENV
+          value: production
+        - name: LOG_LEVEL
+          value: info
+      resources:
+        limits:
+          memory: "128Mi"
+          cpu: "500m"

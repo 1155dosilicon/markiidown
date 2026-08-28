@@ -1,7 +1,7 @@
 {
   "name": "markiidown",
-  "version": "1.1.0",
-  "description": "Leitor de Markdown (.md e .markdown) standalone em TypeScript com Bun, TUI interativo e executável Windows.",
+  "version": "2.0.0",
+  "description": "Visualizador e Editor Universal de Arquivos e Markdown (.md, .ts, .py, .json, .rs, .go, .txt, etc.) standalone em TypeScript com Bun, TUI interativo e executável Windows.",
   "type": "module",
   "main": "src/index.ts",
   "bin": {

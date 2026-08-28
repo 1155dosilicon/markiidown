@@ -1,5 +1,6 @@
 import readline from "node:readline";
 import pc from "picocolors";
+import { runInteractiveEditor } from "./editor.ts";
 import { formatBytes } from "./utils.ts";
 
 export interface InteractiveOptions {
@@ -8,6 +9,7 @@ export interface InteractiveOptions {
   fileSize: number;
   renderedLines: string[];
   tableOfContents: { title: string; lineIndex: number }[];
+  onReload?: () => Promise<{ renderedLines: string[]; tableOfContents: { title: string; lineIndex: number }[]; fileSize: number }>;
 }
 
 /**
@@ -155,11 +157,11 @@ function padToWidth(text: string, width: number): string {
 
 /**
  * Visualizador interativo de terminal (TUI Pager) com buffer alternativo de tela,
- * quebra visual responsiva, rolagem e rodapé fixado rigidamente na base.
+ * quebra visual responsiva, rolagem, busca, sumário e modo editor integrado.
  */
 export async function runInteractiveViewer(options: InteractiveOptions): Promise<void> {
-  const { fileName, fileSize, renderedLines, tableOfContents } = options;
-  const displayFileName = fileName.replace(/[\u0000-\u001F\u007F-\u009F]/g, "�");
+  let { fileName, filePath, fileSize, renderedLines, tableOfContents } = options;
+  const displayFileName = fileName.replace(/[\u0000-\u001F\u007F-\u009F]/g, "");
 
   if (renderedLines.length === 0 || !process.stdout.isTTY || !process.stdin.isTTY) {
     for (const line of renderedLines) {
@@ -242,7 +244,7 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
       return;
     }
 
-    // 1. Renderiza as linhas do Markdown posicionando o cursor linha por linha
+    // 1. Renderiza as linhas posicionando o cursor linha por linha
     for (let row = 1; row <= contentHeight; row++) {
       const lineIndex = scrollTop + (row - 1);
       buffer += `\x1B[${row};1H\x1B[2K`; // Move para linha exata e limpa a linha
@@ -273,13 +275,13 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
       const stats = `${scrollTop + 1}-${Math.min(scrollTop + contentHeight, totalLines)}/${totalLines} (${percent}%)`;
       
       let leftText = ` 📄 ${displayFileName} (${formatBytes(fileSize)}) `;
-      let rightText = ` [?] Ajuda  [t] Sumário  [/] Buscar  [q] Sair  ${stats} `;
+      let rightText = ` [?] Ajuda  [e] Editar  [t] Sumário  [/] Buscar  [q] Sair  ${stats} `;
 
       if (Bun.stringWidth(stripAnsi(leftText)) + Bun.stringWidth(stripAnsi(rightText)) > totalCols) {
         leftText = ` 📄 ${displayFileName} `;
       }
       if (Bun.stringWidth(stripAnsi(leftText)) + Bun.stringWidth(stripAnsi(rightText)) > totalCols) {
-        rightText = ` [q] Sair ${stats} `;
+        rightText = ` [e] Editar  [q] Sair ${stats} `;
       }
 
       leftText = truncateAnsi(leftText, Math.max(0, totalCols - Bun.stringWidth(stripAnsi(rightText))));
@@ -304,6 +306,7 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
       `  ${pc.yellow("PgUp / b")}          : Rolar 1 página para cima`,
       `  ${pc.yellow("Home / g")}          : Ir para o início do documento`,
       `  ${pc.yellow("End / G")}           : Ir para o final do documento`,
+      `  ${pc.yellow("e")}                 : Abrir no Editor Interativo (Editar arquivo)`,
       `  ${pc.yellow("/")}                 : Buscar texto no documento`,
       `  ${pc.yellow("n / N")}             : Próxima / Anterior ocorrência da busca`,
       `  ${pc.yellow("t")}                 : Abrir Sumário (Índice de Seções)`,
@@ -423,7 +426,7 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
       resolvePromise();
     };
 
-    const handleKeypress = (str: string, key: readline.Key) => {
+    const handleKeypress = async (str: string, key: readline.Key) => {
       if (key && key.ctrl && key.name === "c") {
         finish();
         return;
@@ -514,6 +517,36 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
 
       if (str === "q" || (key && key.name === "escape")) {
         finish();
+        return;
+      }
+
+      if (str === "e" || str === "E") {
+        cleanup();
+        process.stdout.removeListener("resize", handleResize);
+        process.stdin.removeListener("keypress", handleKeypress);
+
+        const editResult = await runInteractiveEditor({ filePath });
+
+        if (editResult.saved && options.onReload) {
+          try {
+            const reloaded = await options.onReload();
+            renderedLines = reloaded.renderedLines;
+            tableOfContents = reloaded.tableOfContents;
+            fileSize = reloaded.fileSize;
+            layoutWidth = 0;
+          } catch {}
+        }
+
+        // Restabelece viewer
+        cleanedUp = false;
+        process.stdout.write("\x1B[?1049h\x1B[?25l");
+        if (process.stdin.isTTY) {
+          process.stdin.setRawMode(true);
+          process.stdin.resume();
+        }
+        process.stdout.on("resize", handleResize);
+        process.stdin.on("keypress", handleKeypress);
+        renderScreen();
         return;
       }
 

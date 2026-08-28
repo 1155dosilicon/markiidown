@@ -1,4 +1,4 @@
-export type ViewerMode = "interactive" | "print" | "watch" | "export";
+export type ViewerMode = "interactive" | "print" | "watch" | "export" | "edit";
 export type CliAction = "help" | "version" | "install" | "uninstall" | "register" | "unregister";
 
 export interface CliOptions {
@@ -6,6 +6,8 @@ export interface CliOptions {
   mode: ViewerMode;
   targetFile?: string;
   exportPath?: string;
+  raw?: boolean;
+  lineNumbers?: boolean;
 }
 
 export class CliArgumentError extends Error {
@@ -25,6 +27,8 @@ export function parseCliArgs(args: string[]): CliOptions {
   let explicitMode: ViewerMode | undefined;
   let targetFile: string | undefined;
   let exportPath: string | undefined;
+  let raw = false;
+  let lineNumbers = false;
   let positionalOnly = false;
 
   const setAction = (nextAction: CliAction) => {
@@ -71,6 +75,9 @@ export function parseCliArgs(args: string[]): CliOptions {
     else if (arg === "-p" || arg === "--print") setMode("print");
     else if (arg === "-i" || arg === "--interactive") setMode("interactive");
     else if (arg === "-w" || arg === "--watch") setMode("watch");
+    else if (arg === "-E" || arg === "--edit") setMode("edit");
+    else if (arg === "-r" || arg === "--raw") raw = true;
+    else if (arg === "-n" || arg === "--numbers" || arg === "--line-numbers") lineNumbers = true;
     else if (arg === "-e" || arg === "--export") {
       const value = args[++i];
       if (!value || value.startsWith("-")) {
@@ -92,9 +99,9 @@ export function parseCliArgs(args: string[]): CliOptions {
     }
   }
 
-  if (action && (targetFile || explicitMode)) {
-    throw new CliArgumentError(`A opção --${action} não pode ser combinada com arquivo ou modo de visualização.`);
+  if (action && (targetFile || explicitMode || raw || lineNumbers)) {
+    throw new CliArgumentError(`A opção --${action} não pode ser combinada com arquivo ou opções de visualização.`);
   }
 
-  return { action, mode, targetFile, exportPath };
+  return { action, mode, targetFile, exportPath, raw, lineNumbers };
 }

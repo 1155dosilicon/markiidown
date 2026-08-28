@@ -1,11 +1,17 @@
+import { highlight as highlightCli } from "cli-highlight";
 import { Marked } from "marked";
 import { markedTerminal } from "marked-terminal";
-import { highlight as highlightCli } from "cli-highlight";
-import pc from "picocolors";
 import { watch } from "node:fs";
 import { basename, dirname } from "node:path";
-import { calculateReadingTime, formatBytes } from "./utils.ts";
+import pc from "picocolors";
 import { runInteractiveViewer, stripAnsi } from "./interactive.ts";
+import {
+  calculateReadingTime,
+  detectFileType,
+  formatBytes,
+  isMarkdownPath,
+  type FileTypeInfo,
+} from "./utils.ts";
 
 const SGR_SEQUENCE_AT_START = /^\x1B\[([0-9;]*)m/;
 const LONG_CLI_OPTION = /(?<![\w-])--[A-Za-z0-9][A-Za-z0-9-]*(?:=[^\s"'`)<>{}\]]+)?/g;
@@ -97,10 +103,12 @@ function renderCodeBlock(code: string, language?: string): string {
   }
 
   const indentation = "  ";
-  return renderedCode
-    .split("\n")
-    .map((line) => indentation + line)
-    .join("\n") + "\n\n";
+  return (
+    renderedCode
+      .split("\n")
+      .map((line) => indentation + line)
+      .join("\n") + "\n\n"
+  );
 }
 
 function createTerminalMarked(): Marked {
@@ -153,14 +161,147 @@ function createTerminalMarked(): Marked {
   return terminalMarked;
 }
 
-function sanitizeTerminalInput(markdown: string): string {
+export function sanitizeTerminalInput(text: string): string {
   // Preserva tabulação e quebras de linha, mas impede que um documento injete
   // sequências de controle (OSC/CSI) no terminal do usuário.
-  return markdown.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "�");
+  return text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "");
+}
+
+export interface RenderedFileResult {
+  lines: string[];
+  tableOfContents: { title: string; lineIndex: number }[];
+  rawText: string;
+  sizeBytes: number;
+  typeInfo: FileTypeInfo;
 }
 
 /**
- * Converte Markdown para linhas formatadas com ANSI e mapeia o sumário
+ * Converte qualquer arquivo suportado (Markdown, Código, Texto) para linhas formatadas com ANSI
+ */
+export async function getRenderedFileLines(
+  filePath: string,
+  options?: { raw?: boolean; lineNumbers?: boolean }
+): Promise<RenderedFileResult> {
+  const file = Bun.file(filePath);
+  if (!(await file.exists())) {
+    throw new Error(`Arquivo não encontrado: ${filePath}`);
+  }
+
+  const typeInfo = detectFileType(filePath);
+  const sizeBytes = file.size;
+
+  // 1. Tratamento seguro para arquivos binários
+  if (typeInfo.isBinary) {
+    const lines = [
+      "",
+      pc.yellow(`  ⚠️  O arquivo "${basename(filePath)}" é um arquivo binário (${formatBytes(sizeBytes)}).`),
+      pc.dim("     Arquivos binários não podem ser renderizados como texto no terminal."),
+      "",
+      `     ${pc.cyan("Caminho:")} ${filePath}`,
+      `     ${pc.cyan("Tipo:")}    ${typeInfo.description}`,
+      `     ${pc.cyan("Tamanho:")} ${formatBytes(sizeBytes)}`,
+      "",
+    ];
+    return {
+      lines,
+      tableOfContents: [],
+      rawText: "[Binary Content]",
+      sizeBytes,
+      typeInfo,
+    };
+  }
+
+  const rawText = await file.text();
+
+  // 2. Se for Markdown e não estiver em modo --raw
+  if (typeInfo.type === "markdown" && !options?.raw) {
+    const renderedText = (await createTerminalMarked().parse(sanitizeTerminalInput(rawText))) as string;
+    const lines = renderedText.split(/\r?\n/);
+
+    // Mapeia cabeçalhos para o Sumário
+    const tableOfContents: { title: string; lineIndex: number }[] = [];
+    lines.forEach((line, index) => {
+      const plain = stripAnsi(line).trim();
+      if (/^#{1,6}\s+/.test(plain)) {
+        tableOfContents.push({
+          title: plain.replace(/^#+\s*/, ""),
+          lineIndex: index,
+        });
+      }
+    });
+
+    return {
+      lines,
+      tableOfContents,
+      rawText,
+      sizeBytes,
+      typeInfo,
+    };
+  }
+
+  // 3. Se for Código ou Configuração com Syntax Highlighting
+  const safeRawText = sanitizeTerminalInput(rawText);
+  const rawLines = safeRawText.split(/\r?\n/);
+  const totalDigits = Math.max(2, String(rawLines.length).length);
+  const tableOfContents: { title: string; lineIndex: number }[] = [];
+
+  // Mapeia símbolos de código (funções, classes, interfaces, structs, seções) para o sumário
+  const codeSymbolRegex =
+    /^(?:export\s+)?(?:async\s+)?(?:pub(?:\([^)]*\))?\s+)?(?:function|func|fn|def|class|struct|interface|type|enum|trait|impl|const)\s+([A-Za-z0-9_$]+)/i;
+  const sectionCommentRegex = /^(?:\/\/|#|\/\*|--)\s*(?:\[|\bREGION\b|\bSECTION\b|\bMARK\b|#+)\s*(.*)/i;
+
+  let highlightedText = safeRawText;
+  if (typeInfo.language && typeInfo.language !== "plaintext" && !options?.raw && pc.isColorSupported) {
+    try {
+      highlightedText = highlightCli(safeRawText, {
+        language: typeInfo.language,
+        languageSubset: [],
+        ignoreIllegals: true,
+      });
+    } catch {
+      highlightedText = safeRawText;
+    }
+  }
+
+  const highlightedLines = highlightedText.split(/\r?\n/);
+  const lines: string[] = [];
+
+  for (let i = 0; i < highlightedLines.length; i++) {
+    const rawLine = rawLines[i] ?? "";
+    const lineNumStr = String(i + 1).padStart(totalDigits, " ");
+    const gutter = pc.dim(lineNumStr) + pc.cyan(" │ ");
+    lines.push(gutter + (highlightedLines[i] ?? ""));
+
+    // Extrai símbolos para o Sumário
+    const trimmed = rawLine.trim();
+    const symbolMatch = trimmed.match(codeSymbolRegex);
+    if (symbolMatch && symbolMatch[1]) {
+      tableOfContents.push({
+        title: `${symbolMatch[0].split(/\s+/)[0]} ${symbolMatch[1]}`,
+        lineIndex: i,
+      });
+    } else {
+      const sectionMatch = trimmed.match(sectionCommentRegex);
+      if (sectionMatch && sectionMatch[1]) {
+        tableOfContents.push({
+          title: sectionMatch[1].replace(/\*\/$/, "").trim(),
+          lineIndex: i,
+        });
+      }
+    }
+  }
+
+  return {
+    lines,
+    tableOfContents,
+    rawText,
+    sizeBytes,
+    typeInfo,
+  };
+}
+
+/**
+ * Converte Markdown para linhas formatadas com ANSI e mapeia o sumário (Retrocompatibilidade)
  */
 export async function getRenderedMarkdownLines(filePath: string): Promise<{
   lines: string[];
@@ -168,64 +309,60 @@ export async function getRenderedMarkdownLines(filePath: string): Promise<{
   rawMarkdown: string;
   sizeBytes: number;
 }> {
-  const file = Bun.file(filePath);
-  if (!(await file.exists())) {
-    throw new Error(`Arquivo não encontrado: ${filePath}`);
-  }
-
-  const rawMarkdown = await file.text();
-  const renderedText = (await createTerminalMarked().parse(sanitizeTerminalInput(rawMarkdown))) as string;
-  const lines = renderedText.split(/\r?\n/);
-
-  // Mapeia cabeçalhos para o Sumário
-  const tableOfContents: { title: string; lineIndex: number }[] = [];
-  lines.forEach((line, index) => {
-    const plain = stripAnsi(line).trim();
-    if (/^#{1,6}\s+/.test(plain)) {
-      tableOfContents.push({
-        title: plain.replace(/^#+\s*/, ""),
-        lineIndex: index,
-      });
-    }
-  });
-
+  const result = await getRenderedFileLines(filePath);
   return {
-    lines,
-    tableOfContents,
-    rawMarkdown,
-    sizeBytes: file.size,
+    lines: result.lines,
+    tableOfContents: result.tableOfContents,
+    rawMarkdown: result.rawText,
+    sizeBytes: result.sizeBytes,
   };
 }
 
 /**
- * Abre o leitor interativo de terminal (TUI)
+ * Abre o leitor interativo de terminal (TUI) para qualquer arquivo
  */
-export async function openInteractiveViewer(filePath: string): Promise<void> {
-  const { lines, tableOfContents, sizeBytes } = await getRenderedMarkdownLines(filePath);
+export async function openInteractiveViewer(
+  filePath: string,
+  options?: { raw?: boolean; lineNumbers?: boolean }
+): Promise<void> {
+  const loadData = async () => {
+    const res = await getRenderedFileLines(filePath, options);
+    return {
+      renderedLines: res.lines,
+      tableOfContents: res.tableOfContents,
+      fileSize: res.sizeBytes,
+    };
+  };
+
+  const initial = await loadData();
+
   await runInteractiveViewer({
     fileName: basename(filePath),
     filePath,
-    fileSize: sizeBytes,
-    renderedLines: lines,
-    tableOfContents,
+    fileSize: initial.fileSize,
+    renderedLines: initial.renderedLines,
+    tableOfContents: initial.tableOfContents,
+    onReload: loadData,
   });
 }
 
 /**
- * Imprime o Markdown diretamente no terminal (sem paginação interativa)
+ * Imprime o arquivo diretamente no terminal com syntax highlighting (sem paginação interativa)
  */
-export async function printDirectToTerminal(filePath: string): Promise<void> {
+export async function printDirectToTerminal(
+  filePath: string,
+  options?: { raw?: boolean; lineNumbers?: boolean }
+): Promise<void> {
   const file = Bun.file(filePath);
-
   if (!(await file.exists())) {
     throw new Error(`Arquivo não encontrado: ${filePath}`);
   }
 
-  const rawMarkdown = await file.text();
+  const { lines, rawText, typeInfo } = await getRenderedFileLines(filePath, options);
   const fileName = sanitizeTerminalInput(basename(filePath));
   const displayPath = sanitizeTerminalInput(filePath);
   const size = formatBytes(file.size);
-  const { words, minutes } = calculateReadingTime(rawMarkdown);
+  const { words, minutes } = calculateReadingTime(rawText);
 
   const width = Math.min(process.stdout.columns || 80, 100);
   const separator = pc.cyan("─".repeat(width));
@@ -234,27 +371,38 @@ export async function printDirectToTerminal(filePath: string): Promise<void> {
   console.log(`${pc.bold(pc.white(` 📄 ${fileName}`))} ${pc.dim(`(${displayPath})`)}`);
   console.log(
     `${pc.dim(" 📊 Tamanho:")} ${pc.yellow(size)}  │  ` +
+      `${pc.dim("🏷️ Tipo:")} ${pc.magenta(typeInfo.description)}  │  ` +
       `${pc.dim("📝 Palavras:")} ${pc.yellow(words.toString())}  │  ` +
       `${pc.dim("⏱️ Leitura:")} ${pc.green(`~${minutes} min`)}`
   );
   console.log(separator);
   console.log("");
 
-  try {
-    const rendered = createTerminalMarked().parse(sanitizeTerminalInput(rawMarkdown));
-    console.log(rendered);
-  } catch (err) {
-    console.error(pc.red(`Erro ao renderizar Markdown: ${err}`));
-    console.log(sanitizeTerminalInput(rawMarkdown));
+  if (typeInfo.type === "markdown" && !options?.raw) {
+    try {
+      const rendered = createTerminalMarked().parse(sanitizeTerminalInput(rawText));
+      console.log(rendered);
+    } catch {
+      for (const line of lines) {
+        console.log(line);
+      }
+    }
+  } else {
+    for (const line of lines) {
+      console.log(line);
+    }
   }
 
   console.log(pc.dim("─".repeat(width)) + "\n");
 }
 
 /**
- * Monitora alterações no arquivo e atualiza a exibição no terminal
+ * Monitora alterações no arquivo e atualiza a exibição no terminal em tempo real
  */
-export async function watchFileInTerminal(filePath: string): Promise<void> {
+export async function watchFileInTerminal(
+  filePath: string,
+  options?: { raw?: boolean; lineNumbers?: boolean }
+): Promise<void> {
   const watchedName = basename(filePath).toLowerCase();
   const watchedDirectory = dirname(filePath);
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -273,7 +421,7 @@ export async function watchFileInTerminal(filePath: string): Promise<void> {
         renderAgain = false;
         console.clear();
         try {
-          await printDirectToTerminal(filePath);
+          await printDirectToTerminal(filePath, options);
         } catch (error) {
           console.error(pc.red(`Erro ao atualizar o arquivo: ${error instanceof Error ? error.message : error}`));
         }
@@ -325,3 +473,4 @@ export async function watchFileInTerminal(filePath: string): Promise<void> {
     }
   });
 }
+

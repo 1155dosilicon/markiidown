@@ -1,6 +1,15 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
-import { isAbsolute, join, resolve, extname } from "node:path";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import pc from "picocolors";
+
+export type FileType = "markdown" | "code" | "text" | "binary";
+
+export interface FileTypeInfo {
+  type: FileType;
+  language: string;
+  isBinary: boolean;
+  description: string;
+}
 
 export interface FileInfo {
   name: string;
@@ -8,7 +17,104 @@ export interface FileInfo {
   absolutePath: string;
   sizeBytes: number;
   updatedAt: Date;
+  typeInfo?: FileTypeInfo;
 }
+
+/**
+ * Mapeamento de extensões e nomes de arquivo para linguagens de programação e tipos
+ */
+const EXTENSION_LANGUAGE_MAP: Record<string, { language: string; type: FileType; description: string }> = {
+  // Markdown
+  ".md": { language: "markdown", type: "markdown", description: "Markdown Document" },
+  ".markdown": { language: "markdown", type: "markdown", description: "Markdown Document" },
+  ".mdown": { language: "markdown", type: "markdown", description: "Markdown Document" },
+  ".mkd": { language: "markdown", type: "markdown", description: "Markdown Document" },
+  ".mdx": { language: "markdown", type: "markdown", description: "MDX Document" },
+
+  // JavaScript & TypeScript
+  ".ts": { language: "typescript", type: "code", description: "TypeScript" },
+  ".tsx": { language: "typescript", type: "code", description: "TypeScript React" },
+  ".mts": { language: "typescript", type: "code", description: "TypeScript Module" },
+  ".cts": { language: "typescript", type: "code", description: "TypeScript CommonJS" },
+  ".js": { language: "javascript", type: "code", description: "JavaScript" },
+  ".jsx": { language: "javascript", type: "code", description: "JavaScript React" },
+  ".mjs": { language: "javascript", type: "code", description: "JavaScript Module" },
+  ".cjs": { language: "javascript", type: "code", description: "JavaScript CommonJS" },
+
+  // Data & Config formats
+  ".json": { language: "json", type: "code", description: "JSON Document" },
+  ".jsonc": { language: "json", type: "code", description: "JSON with Comments" },
+  ".json5": { language: "json", type: "code", description: "JSON5" },
+  ".yaml": { language: "yaml", type: "code", description: "YAML Configuration" },
+  ".yml": { language: "yaml", type: "code", description: "YAML Configuration" },
+  ".toml": { language: "ini", type: "code", description: "TOML Configuration" },
+  ".ini": { language: "ini", type: "code", description: "INI Configuration" },
+  ".cfg": { language: "ini", type: "code", description: "Configuration File" },
+  ".conf": { language: "ini", type: "code", description: "Configuration File" },
+  ".env": { language: "bash", type: "code", description: "Environment Variables" },
+  ".xml": { language: "xml", type: "code", description: "XML Document" },
+  ".svg": { language: "xml", type: "code", description: "SVG Vector Image" },
+  ".html": { language: "html", type: "code", description: "HTML Document" },
+  ".htm": { language: "html", type: "code", description: "HTML Document" },
+  ".css": { language: "css", type: "code", description: "CSS Stylesheet" },
+  ".scss": { language: "scss", type: "code", description: "SCSS Stylesheet" },
+  ".sass": { language: "sass", type: "code", description: "SASS Stylesheet" },
+  ".less": { language: "less", type: "code", description: "LESS Stylesheet" },
+
+  // Programming Languages
+  ".py": { language: "python", type: "code", description: "Python Script" },
+  ".pyw": { language: "python", type: "code", description: "Python Script" },
+  ".rs": { language: "rust", type: "code", description: "Rust Source" },
+  ".go": { language: "go", type: "code", description: "Go Source" },
+  ".c": { language: "c", type: "code", description: "C Source" },
+  ".h": { language: "c", type: "code", description: "C/C++ Header" },
+  ".cpp": { language: "cpp", type: "code", description: "C++ Source" },
+  ".cxx": { language: "cpp", type: "code", description: "C++ Source" },
+  ".cc": { language: "cpp", type: "code", description: "C++ Source" },
+  ".hpp": { language: "cpp", type: "code", description: "C++ Header" },
+  ".cs": { language: "csharp", type: "code", description: "C# Source" },
+  ".java": { language: "java", type: "code", description: "Java Source" },
+  ".kt": { language: "kotlin", type: "code", description: "Kotlin Source" },
+  ".kts": { language: "kotlin", type: "code", description: "Kotlin Script" },
+  ".swift": { language: "swift", type: "code", description: "Swift Source" },
+  ".php": { language: "php", type: "code", description: "PHP Script" },
+  ".rb": { language: "ruby", type: "code", description: "Ruby Script" },
+  ".sql": { language: "sql", type: "code", description: "SQL Query" },
+  ".lua": { language: "lua", type: "code", description: "Lua Script" },
+  ".r": { language: "r", type: "code", description: "R Script" },
+  ".dart": { language: "dart", type: "code", description: "Dart Source" },
+  ".zig": { language: "zig", type: "code", description: "Zig Source" },
+
+  // Shell & Scripts
+  ".sh": { language: "bash", type: "code", description: "Shell Script" },
+  ".bash": { language: "bash", type: "code", description: "Bash Script" },
+  ".zsh": { language: "bash", type: "code", description: "Zsh Script" },
+  ".fish": { language: "bash", type: "code", description: "Fish Script" },
+  ".bat": { language: "dos", type: "code", description: "Batch Script" },
+  ".cmd": { language: "dos", type: "code", description: "Command Script" },
+  ".ps1": { language: "powershell", type: "code", description: "PowerShell Script" },
+  ".psm1": { language: "powershell", type: "code", description: "PowerShell Module" },
+
+  // Plain Text & Logs
+  ".txt": { language: "plaintext", type: "text", description: "Plain Text" },
+  ".log": { language: "plaintext", type: "text", description: "Log File" },
+  ".csv": { language: "plaintext", type: "text", description: "CSV Data" },
+  ".tsv": { language: "plaintext", type: "text", description: "TSV Data" },
+  ".diff": { language: "diff", type: "code", description: "Diff Patch" },
+  ".patch": { language: "diff", type: "code", description: "Diff Patch" },
+};
+
+const FILENAME_LANGUAGE_MAP: Record<string, { language: string; type: FileType; description: string }> = {
+  dockerfile: { language: "dockerfile", type: "code", description: "Dockerfile" },
+  containerfile: { language: "dockerfile", type: "code", description: "Containerfile" },
+  makefile: { language: "makefile", type: "code", description: "Makefile" },
+  license: { language: "plaintext", type: "text", description: "License Document" },
+  "license.md": { language: "markdown", type: "markdown", description: "License Markdown" },
+  "license.txt": { language: "plaintext", type: "text", description: "License Document" },
+  gemfile: { language: "ruby", type: "code", description: "Ruby Gemfile" },
+  vagrantfile: { language: "ruby", type: "code", description: "Vagrantfile" },
+  procfile: { language: "yaml", type: "code", description: "Procfile" },
+};
 
 /**
  * Exibe o banner inicial do MarkiiDown no terminal
@@ -23,25 +129,129 @@ export function printBanner(): void {
  | |  | | (_| | |  |   <| | | |__| | (_) \\ V  V /| | | |
  |_|  |_|\\__,_|_|  |_|\\_\\_|_|_____/ \\___/ \\_/\\_/ |_| |_|
     `) +
-      pc.dim("  Leitor de Markdown 100% Standalone em TypeScript com Bun\n")
+      pc.dim("  Visualizador & Editor Universal de Arquivos e Markdown (Bun/TypeScript)\n")
   );
 }
 
 /**
- * Resolve o caminho absoluto de um arquivo fornecido pelo usuário
+ * Verifica se um buffer representa conteúdo binário (ex: imagens, executáveis, zip)
  */
-export function resolveTargetFile(inputPath?: string): string | null {
+export function isBinaryBuffer(buffer: Uint8Array | Buffer): boolean {
+  const checkLength = Math.min(buffer.length, 8192);
+  if (checkLength === 0) return false;
+
+  let nonPrintableCount = 0;
+  for (let i = 0; i < checkLength; i++) {
+    const byte = buffer[i];
+    // Byte nulo ou caracteres de controle não convencionais para texto
+    if (byte === 0) return true;
+    if (byte < 7 || (byte > 14 && byte < 32 && byte !== 27)) {
+      nonPrintableCount++;
+    }
+  }
+
+  return nonPrintableCount / checkLength > 0.3;
+}
+
+const BINARY_EXTENSIONS = new Set([
+  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".tiff",
+  ".exe", ".dll", ".bin", ".so", ".dylib", ".o", ".a", ".lib",
+  ".zip", ".tar", ".gz", ".tgz", ".7z", ".rar", ".bz2", ".xz",
+  ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+  ".mp3", ".mp4", ".wav", ".avi", ".mkv", ".mov", ".flac", ".ogg",
+  ".wasm", ".iso", ".img", ".dmg", ".ttf", ".otf", ".woff", ".woff2",
+]);
+
+/**
+ * Detecta o tipo de arquivo, linguagem para syntax highlighting e descrição
+ */
+export function detectFileType(filePath: string, sampleBuffer?: Uint8Array | Buffer): FileTypeInfo {
+  const fileName = basename(filePath).toLowerCase();
+  const extension = extname(filePath).toLowerCase();
+
+  // 1. Checagem por extensões binárias conhecidas
+  if (BINARY_EXTENSIONS.has(extension)) {
+    return {
+      type: "binary",
+      language: "binary",
+      isBinary: true,
+      description: `Binary (${extension.toUpperCase().slice(1)})`,
+    };
+  }
+
+  // 2. Checagem por nome exato de arquivo
+  if (FILENAME_LANGUAGE_MAP[fileName]) {
+    const info = FILENAME_LANGUAGE_MAP[fileName];
+    return { ...info, isBinary: false };
+  }
+
+  // 3. Checagem por extensão de texto/código conhecida
+  if (EXTENSION_LANGUAGE_MAP[extension]) {
+    const info = EXTENSION_LANGUAGE_MAP[extension];
+    return { ...info, isBinary: false };
+  }
+
+  // 4. Checagem por buffer de amostra ou leitura rápida
+  let isBinary = false;
+  if (sampleBuffer) {
+    isBinary = isBinaryBuffer(sampleBuffer);
+  } else if (existsSync(filePath)) {
+    try {
+      const stats = statSync(filePath);
+      if (stats.isFile() && stats.size > 0) {
+        const buffer = readFileSync(filePath);
+        isBinary = isBinaryBuffer(buffer);
+      }
+    } catch {}
+  }
+
+  if (isBinary) {
+    return {
+      type: "binary",
+      language: "binary",
+      isBinary: true,
+      description: "Binary File",
+    };
+  }
+
+
+  // Padrão para arquivos de texto sem extensão reconhecida
+  return {
+    type: "text",
+    language: "plaintext",
+    isBinary: false,
+    description: "Text Document",
+  };
+}
+
+/**
+ * Informa se o caminho usa uma extensão Markdown suportada.
+ */
+export function isMarkdownPath(filePath: string): boolean {
+  const extension = extname(filePath).toLowerCase();
+  return extension === ".md" || extension === ".markdown" || extension === ".mdown" || extension === ".mkd" || extension === ".mdx";
+}
+
+/**
+ * Resolve o caminho absoluto de um arquivo fornecido pelo usuário (qualquer formato existente ou novo)
+ */
+export function resolveTargetFile(inputPath?: string, allowNew = false): string | null {
   if (inputPath) {
     const fullPath = isAbsolute(inputPath) ? inputPath : resolve(process.cwd(), inputPath);
-    if (!existsSync(fullPath)) return null;
+    if (!existsSync(fullPath)) {
+      if (allowNew && existsSync(dirname(fullPath))) {
+        return fullPath;
+      }
+      return null;
+    }
 
     try {
       const stats = statSync(fullPath);
       if (stats.isDirectory()) {
-        return findFirstMarkdownInDir(fullPath);
+        return findFirstReadableFileInDir(fullPath);
       }
 
-      if (stats.isFile() && isMarkdownPath(fullPath)) {
+      if (stats.isFile()) {
         return fullPath;
       }
     } catch {
@@ -59,35 +269,51 @@ export function resolveTargetFile(inputPath?: string): string | null {
     } catch {}
   }
 
-  // Procura o primeiro arquivo .md na pasta atual
-  const firstMd = findFirstMarkdownInDir(process.cwd());
-  if (firstMd) {
-    return firstMd;
-  }
-
-  return null;
+  // Procura o primeiro arquivo no diretório atual
+  return findFirstReadableFileInDir(process.cwd());
 }
 
 /**
- * Procura o primeiro arquivo .md dentro de uma pasta
+ * Procura o primeiro arquivo legível dentro de uma pasta (priorizando Markdown, depois código e texto)
  */
-function findFirstMarkdownInDir(dirPath: string): string | null {
+function findFirstReadableFileInDir(dirPath: string): string | null {
   try {
     const files = readdirSync(dirPath);
-    const markdownFiles = files.filter((fileName) => {
-      if (!isMarkdownPath(fileName)) return false;
-      try {
-        return statSync(join(dirPath, fileName)).isFile();
-      } catch {
-        return false;
-      }
-    });
+    const validFiles: string[] = [];
 
-    const readme = markdownFiles.find((f) => f.toLowerCase() === "readme.md");
+    for (const fileName of files) {
+      if (fileName.startsWith(".") || fileName === "node_modules" || fileName === "dist" || fileName === "build") {
+        continue;
+      }
+      try {
+        const full = join(dirPath, fileName);
+        if (statSync(full).isFile()) {
+          validFiles.push(fileName);
+        }
+      } catch {}
+    }
+
+    // 1. Prioriza README.md
+    const readme = validFiles.find((f) => f.toLowerCase() === "readme.md");
     if (readme) return join(dirPath, readme);
 
-    const anyMd = markdownFiles.sort((a, b) => a.localeCompare(b))[0];
+    // 2. Prioriza qualquer arquivo Markdown
+    const anyMd = validFiles.filter(isMarkdownPath).sort((a, b) => a.localeCompare(b))[0];
     if (anyMd) return join(dirPath, anyMd);
+
+    // 3. Pega o primeiro arquivo de texto ou código suportado
+    const anyText = validFiles
+      .filter((f) => {
+        const info = detectFileType(join(dirPath, f));
+        return !info.isBinary;
+      })
+      .sort((a, b) => a.localeCompare(b))[0];
+
+    if (anyText) return join(dirPath, anyText);
+
+    if (validFiles.length > 0) {
+      return join(dirPath, validFiles.sort((a, b) => a.localeCompare(b))[0]);
+    }
   } catch {
     return null;
   }
@@ -95,32 +321,26 @@ function findFirstMarkdownInDir(dirPath: string): string | null {
 }
 
 /**
- * Informa se o caminho usa uma extensão Markdown suportada.
+ * Lista todos os arquivos legíveis de um diretório
  */
-export function isMarkdownPath(filePath: string): boolean {
-  const extension = extname(filePath).toLowerCase();
-  return extension === ".md" || extension === ".markdown";
-}
-
-/**
- * Lista todos os arquivos .md de um diretório
- */
-export function listMarkdownFilesInDir(dirPath: string): FileInfo[] {
+export function listSupportedFilesInDir(dirPath: string): FileInfo[] {
   const result: FileInfo[] = [];
   try {
     const entries = readdirSync(dirPath);
     for (const entry of entries) {
-      if (entry.startsWith(".") || entry === "node_modules" || entry === "dist") continue;
+      if (entry.startsWith(".") || entry === "node_modules" || entry === "dist" || entry === "build") continue;
       const fullPath = join(dirPath, entry);
       try {
         const stats = statSync(fullPath);
-        if (stats.isFile() && isMarkdownPath(entry)) {
+        if (stats.isFile()) {
+          const typeInfo = detectFileType(fullPath);
           result.push({
             name: entry,
             relativePath: entry,
             absolutePath: fullPath,
             sizeBytes: stats.size,
             updatedAt: stats.mtime,
+            typeInfo,
           });
         }
       } catch {}
@@ -134,6 +354,13 @@ export function listMarkdownFilesInDir(dirPath: string): FileInfo[] {
     if (b.name.toLowerCase() === "readme.md") return 1;
     return a.name.localeCompare(b.name);
   });
+}
+
+/**
+ * Mantém compatibilidade com funções antigas de listagem de markdown
+ */
+export function listMarkdownFilesInDir(dirPath: string): FileInfo[] {
+  return listSupportedFilesInDir(dirPath).filter((f) => isMarkdownPath(f.name));
 }
 
 /**
