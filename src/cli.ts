@@ -8,6 +8,7 @@ export interface CliOptions {
   exportPath?: string;
   raw?: boolean;
   lineNumbers?: boolean;
+  createNew?: boolean;
 }
 
 export class CliArgumentError extends Error {
@@ -29,6 +30,7 @@ export function parseCliArgs(args: string[]): CliOptions {
   let exportPath: string | undefined;
   let raw = false;
   let lineNumbers = false;
+  let createNew = false;
   let positionalOnly = false;
 
   const setAction = (nextAction: CliAction) => {
@@ -76,6 +78,10 @@ export function parseCliArgs(args: string[]): CliOptions {
     else if (arg === "-i" || arg === "--interactive") setMode("interactive");
     else if (arg === "-w" || arg === "--watch") setMode("watch");
     else if (arg === "-E" || arg === "--edit") setMode("edit");
+    else if (arg === "--new") {
+      setMode("edit");
+      createNew = true;
+    }
     else if (arg === "-r" || arg === "--raw") raw = true;
     else if (arg === "-n" || arg === "--numbers" || arg === "--line-numbers") lineNumbers = true;
     else if (arg === "-e" || arg === "--export") {
@@ -103,5 +109,5 @@ export function parseCliArgs(args: string[]): CliOptions {
     throw new CliArgumentError(`A opção --${action} não pode ser combinada com arquivo ou opções de visualização.`);
   }
 
-  return { action, mode, targetFile, exportPath, raw, lineNumbers };
+  return { action, mode, targetFile, exportPath, raw, lineNumbers, createNew };
 }

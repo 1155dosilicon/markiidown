@@ -117,6 +117,24 @@ const FILENAME_LANGUAGE_MAP: Record<string, { language: string; type: FileType; 
 };
 
 /**
+ * Arquivos criados automaticamente pelo sistema (Windows Explorer, Finder).
+ * Nunca devem ser escolhidos como o "arquivo principal" de uma pasta:
+ * sem este filtro, abrir uma pasta ou criar um arquivo novo no Desktop
+ * abre o `desktop.ini` em vez do comportamento esperado.
+ */
+const SYSTEM_FILENAMES = new Set([
+  "desktop.ini",
+  "thumbs.db",
+  "ehthumbs.db",
+  "ehthumbs_vista.db",
+  ".ds_store",
+]);
+
+export function isSystemFileName(fileName: string): boolean {
+  return SYSTEM_FILENAMES.has(basename(fileName).toLowerCase());
+}
+
+/**
  * Exibe o banner inicial do MarkiiDown no terminal
  */
 export function printBanner(): void {
@@ -285,6 +303,9 @@ function findFirstReadableFileInDir(dirPath: string): string | null {
       if (fileName.startsWith(".") || fileName === "node_modules" || fileName === "dist" || fileName === "build") {
         continue;
       }
+      if (isSystemFileName(fileName)) {
+        continue;
+      }
       try {
         const full = join(dirPath, fileName);
         if (statSync(full).isFile()) {
@@ -321,6 +342,54 @@ function findFirstReadableFileInDir(dirPath: string): string | null {
 }
 
 /**
+ * Gera um caminho livre no estilo do Windows Explorer:
+ * "novo.md", "novo (2).md", "novo (3).md", ...
+ */
+export function getUniqueFilePath(dirPath: string, baseName: string): string {
+  const dotIndex = baseName.lastIndexOf(".");
+  const stem = dotIndex > 0 ? baseName.slice(0, dotIndex) : baseName;
+  const extension = dotIndex > 0 ? baseName.slice(dotIndex) : "";
+  let candidate = join(dirPath, baseName);
+  let counter = 2;
+  while (existsSync(candidate)) {
+    candidate = join(dirPath, `${stem} (${counter})${extension}`);
+    counter++;
+  }
+  return candidate;
+}
+
+/**
+ * Resolve o alvo para a criação de um arquivo novo:
+ * - sem argumento: "novo.md" (com nome único) na pasta atual;
+ * - pasta existente: "novo.md" (com nome único) dentro dela;
+ * - caminho inexistente com pasta-mãe válida: usa o caminho como está;
+ * - arquivo existente: gera um nome irmão único ("arquivo (2).md").
+ * Retorna null quando a pasta-mãe não existe.
+ */
+export function resolveNewFileTarget(inputPath?: string, defaultName = "novo.md"): string | null {
+  if (!inputPath) {
+    return getUniqueFilePath(process.cwd(), defaultName);
+  }
+
+  const fullPath = isAbsolute(inputPath) ? inputPath : resolve(process.cwd(), inputPath);
+  try {
+    if (existsSync(fullPath)) {
+      if (statSync(fullPath).isDirectory()) {
+        return getUniqueFilePath(fullPath, defaultName);
+      }
+      return getUniqueFilePath(dirname(fullPath), basename(fullPath));
+    }
+  } catch {
+    return null;
+  }
+
+  if (existsSync(dirname(fullPath))) {
+    return fullPath;
+  }
+  return null;
+}
+
+/**
  * Lista todos os arquivos legíveis de um diretório
  */
 export function listSupportedFilesInDir(dirPath: string): FileInfo[] {
@@ -329,6 +398,7 @@ export function listSupportedFilesInDir(dirPath: string): FileInfo[] {
     const entries = readdirSync(dirPath);
     for (const entry of entries) {
       if (entry.startsWith(".") || entry === "node_modules" || entry === "dist" || entry === "build") continue;
+      if (isSystemFileName(entry)) continue;
       const fullPath = join(dirPath, entry);
       try {
         const stats = statSync(fullPath);

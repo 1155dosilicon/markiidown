@@ -10,6 +10,7 @@ describe("parseCliArgs", () => {
       exportPath: "saida.html",
       raw: false,
       lineNumbers: false,
+      createNew: false,
     });
   });
 
@@ -21,6 +22,7 @@ describe("parseCliArgs", () => {
       exportPath: undefined,
       raw: false,
       lineNumbers: false,
+      createNew: false,
     });
 
     expect(parseCliArgs(["main.py", "-E"])).toEqual({
@@ -30,6 +32,29 @@ describe("parseCliArgs", () => {
       exportPath: undefined,
       raw: false,
       lineNumbers: false,
+      createNew: false,
+    });
+  });
+
+  test("analisa --new como modo de edição com criação de arquivo novo", () => {
+    expect(parseCliArgs(["--new"])).toEqual({
+      action: undefined,
+      mode: "edit",
+      targetFile: undefined,
+      exportPath: undefined,
+      raw: false,
+      lineNumbers: false,
+      createNew: true,
+    });
+
+    expect(parseCliArgs(["C:\\Users\\Teste\\Desktop\\novo.md", "--new"])).toEqual({
+      action: undefined,
+      mode: "edit",
+      targetFile: "C:\\Users\\Teste\\Desktop\\novo.md",
+      exportPath: undefined,
+      raw: false,
+      lineNumbers: false,
+      createNew: true,
     });
   });
 
@@ -41,6 +66,7 @@ describe("parseCliArgs", () => {
       exportPath: undefined,
       raw: true,
       lineNumbers: true,
+      createNew: false,
     });
   });
 
@@ -55,10 +81,12 @@ describe("parseCliArgs", () => {
   test("rejeita modos contraditórios", () => {
     expect(() => parseCliArgs(["arquivo.md", "--print", "--watch"])).toThrow(/não podem ser usados juntos/);
     expect(() => parseCliArgs(["arquivo.ts", "--edit", "--print"])).toThrow(/não podem ser usados juntos/);
+    expect(() => parseCliArgs(["arquivo.md", "--new", "--print"])).toThrow(/não podem ser usados juntos/);
   });
 
   test("rejeita ações administrativas combinadas com arquivos", () => {
     expect(() => parseCliArgs(["--install", "arquivo.md"])).toThrow(/não pode ser combinada/);
+    expect(() => parseCliArgs(["--install", "--new"])).toThrow(/não pode ser combinada/);
   });
 });
 

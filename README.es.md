@@ -59,10 +59,11 @@ Tras la instalación:
 1. El comando `markiidown` estará disponible en nuevas ventanas de PowerShell o CMD (vuelva a abrir la terminal después de instalar).
 2. Al hacer **clic derecho** en cualquier espacio vacío de una carpeta o escritorio se muestra:
    - **"Nuevo" -> "Documento Markdown"** (crea un archivo `.md` inmediatamente, igual que el Bloc de notas).
-   - **"Nuevo archivo con MarkiiDown"** (abre el editor directamente para escribir y guardar).
-   - **"Abrir carpeta con MarkiiDown"** (navega y abre los archivos del directorio).
+   - **"Nuevo archivo con MarkiiDown"** (crea `novo.md`, `novo (2).md`... en esa carpeta y abre el editor).
+   - **"Abrir carpeta con MarkiiDown"** (abre el archivo principal del directorio, omitiendo `desktop.ini`/`thumbs.db`).
 3. Al hacer **clic derecho** en cualquier archivo verá la opción **"Abrir con MarkiiDown"**.
-4. Puede asociar MarkiiDown como aplicación predeterminada para archivos en *"Abrir con..."*.
+4. Al hacer **clic derecho sobre el icono de una carpeta** verá **"Abrir carpeta con MarkiiDown"** y **"Nuevo archivo con MarkiiDown"** (crea el archivo dentro de esa carpeta).
+5. Puede asociar MarkiiDown como aplicación predeterminada para archivos en *"Abrir con..."*.
 
 Para desinstalar y eliminar todas las entradas del sistema:
 ```powershell
@@ -118,6 +119,10 @@ markiidown config.json
 # 2. Abrir directamente en el editor de terminal
 markiidown main.py --edit
 markiidown script.ts -E
+
+# 2b. Crear siempre un archivo nuevo con nombre único y abrirlo en el editor
+markiidown --new
+markiidown MiCarpeta --new
 
 # 3. Imprimir todo el contenido formateado y coloreado en stdout
 markiidown notas.md --print

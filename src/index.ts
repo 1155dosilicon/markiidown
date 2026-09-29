@@ -7,7 +7,7 @@ import { runInteractiveEditor } from "./editor.ts";
 import { convertFileToStaticHtml } from "./html-template.ts";
 import { getInstalledExePath, installMarkiiDown, isRunningFromBunRuntime, uninstallMarkiiDown } from "./installer.ts";
 import { openInteractiveViewer, printDirectToTerminal, watchFileInTerminal } from "./terminal.ts";
-import { printBanner, resolveTargetFile } from "./utils.ts";
+import { printBanner, resolveNewFileTarget, resolveTargetFile } from "./utils.ts";
 import { registerWindowsContextMenu, unregisterWindowsContextMenu } from "./windows-registry.ts";
 
 const VERSION = "2.0.0";
@@ -30,6 +30,7 @@ ${pc.bold(pc.yellow("FORMATOS SUPORTADOS:"))}
 ${pc.bold(pc.yellow("OPÇÕES PRINCIPAIS:"))}
   -i, --interactive       Abre no leitor interativo de terminal com rolagem, busca e atalho para editor (Padrão)
   -E, --edit              Abre diretamente no editor interativo de terminal com salvamento via Ctrl+S
+      --new [pasta|arq.]  Sempre cria um arquivo novo com nome único ("novo.md", "novo (2).md"...) e abre no editor
   -p, --print             Imprime todo o conteúdo diretamente no terminal (com syntax highlighting)
   -w, --watch             Monitora alterações no arquivo em tempo real
   -r, --raw               Exibe o arquivo sem formatação/parsers
@@ -72,6 +73,7 @@ ${pc.bold(pc.yellow("EXEMPLOS:"))}
   ${pc.cyan("markiidown notas.md --watch")}      Atualiza a exibição no terminal ao salvar
   ${pc.cyan("markiidown codigo.rs -e app.html")} Exporta o arquivo para HTML estático estilizado
   ${pc.cyan("markiidown --install")}             Instala no Windows e integra ao menu do Explorador
+  ${pc.cyan("markiidown --new")}                 Cria "novo.md" (ou "novo (2).md"...) e abre no editor
 `);
 }
 
@@ -117,7 +119,32 @@ async function main(): Promise<void> {
   }
 
   // Resolve o arquivo alvo (permite novos caminhos em modo de edição)
-  let resolvedPath = resolveTargetFile(options.targetFile, mode === "edit");
+  let resolvedPath: string | null;
+  if (options.createNew && mode === "edit") {
+    // "--new" sempre cria um arquivo novo com nome único, nunca abre um existente
+    resolvedPath = resolveNewFileTarget(options.targetFile);
+  } else {
+    resolvedPath = resolveTargetFile(options.targetFile, mode === "edit");
+
+    if (mode === "edit") {
+      if (!options.targetFile) {
+        // "markiidown --edit" sem alvo sempre inicia um arquivo novo,
+        // em vez de abrir um arquivo existente ao acaso na pasta atual
+        // (no Desktop isso abria o desktop.ini)
+        resolvedPath = resolveNewFileTarget(undefined);
+      } else {
+        // "--edit" apontando para uma pasta cria o arquivo novo dentro dela
+        const absoluteTarget = isAbsolute(options.targetFile)
+          ? options.targetFile
+          : resolve(process.cwd(), options.targetFile);
+        try {
+          if (existsSync(absoluteTarget) && statSync(absoluteTarget).isDirectory()) {
+            resolvedPath = resolveNewFileTarget(absoluteTarget);
+          }
+        } catch {}
+      }
+    }
+  }
 
   // Se o usuário passou um arquivo inexistente no modo interativo padrão,
   // abre no editor para criar o arquivo (comportamento estilo Bloco de Notas)
@@ -129,11 +156,6 @@ async function main(): Promise<void> {
       resolvedPath = candidatePath;
       mode = "edit";
     }
-  }
-
-  // Se o usuário chamou `markiidown -E` sem especificar arquivo e não há arquivo legível na pasta, inicia novo.md
-  if (!resolvedPath && !options.targetFile && mode === "edit") {
-    resolvedPath = resolve(process.cwd(), "novo.md");
   }
 
   if (!resolvedPath) {

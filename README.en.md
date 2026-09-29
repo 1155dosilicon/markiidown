@@ -59,10 +59,11 @@ After installation:
 1. The `markiidown` command becomes available in new Command Prompt or PowerShell windows (reopen the terminal after installation).
 2. Right-clicking in the empty space of any folder or the desktop displays:
    - **"New" -> "Markdown Document"** (creates a `.md` file immediately, just like Notepad).
-   - **"New file with MarkiiDown"** (opens the editor directly to compose and save).
-   - **"Open folder with MarkiiDown"** (browses and opens directory files).
+   - **"New file with MarkiiDown"** (creates `novo.md`, `novo (2).md`... in that folder and opens the editor).
+   - **"Open folder with MarkiiDown"** (opens the directory's main file, skipping `desktop.ini`/`thumbs.db`).
 3. Right-clicking any file in Explorer displays **"Open with MarkiiDown"**.
-4. You can set MarkiiDown as the default application for Markdown files in *"Open with..."*.
+4. Right-clicking a folder icon displays **"Open folder with MarkiiDown"** and **"New file with MarkiiDown"** (creates the file inside that folder).
+5. You can set MarkiiDown as the default application for Markdown files in *"Open with..."*.
 
 To uninstall and clean up all system entries:
 ```powershell
@@ -118,6 +119,10 @@ markiidown config.json
 # 2. Open directly in terminal editor
 markiidown main.py --edit
 markiidown script.ts -E
+
+# 2b. Always create a new uniquely-named file and open it in the editor
+markiidown --new
+markiidown MyFolder --new
 
 # 3. Print entire formatted and highlighted content to stdout
 markiidown notes.md --print

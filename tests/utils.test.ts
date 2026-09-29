@@ -6,8 +6,12 @@ import {
   calculateReadingTime,
   detectFileType,
   formatBytes,
+  getUniqueFilePath,
   isBinaryBuffer,
   isMarkdownPath,
+  isSystemFileName,
+  listSupportedFilesInDir,
+  resolveNewFileTarget,
   resolveTargetFile,
 } from "../src/utils.ts";
 
@@ -63,6 +67,82 @@ describe("resolveTargetFile", () => {
     writeFileSync(markdown, "# Real");
 
     expect(resolveTargetFile(directory)).toBe(markdown);
+  });
+
+  test("ignora arquivos de sistema do Windows (desktop.ini, thumbs.db)", () => {
+    expect(isSystemFileName("desktop.ini")).toBe(true);
+    expect(isSystemFileName("DESKTOP.INI")).toBe(true);
+    expect(isSystemFileName("Thumbs.db")).toBe(true);
+    expect(isSystemFileName("notas.md")).toBe(false);
+
+    const directory = makeTemporaryDirectory();
+    writeFileSync(join(directory, "desktop.ini"), "[.ShellClassInfo]");
+    writeFileSync(join(directory, "Thumbs.db"), "fake");
+    const notes = join(directory, "notas.md");
+    writeFileSync(notes, "# Notas");
+
+    expect(resolveTargetFile(directory)).toBe(notes);
+    expect(listSupportedFilesInDir(directory).map((f) => f.name)).toEqual(["notas.md"]);
+  });
+
+  test("retorna null para pasta contendo apenas arquivos de sistema", () => {
+    const directory = makeTemporaryDirectory();
+    writeFileSync(join(directory, "desktop.ini"), "[.ShellClassInfo]");
+
+    expect(resolveTargetFile(directory)).toBeNull();
+  });
+});
+
+describe("resolveNewFileTarget", () => {
+  test("gera nome único estilo Explorer quando o arquivo já existe", () => {
+    const directory = makeTemporaryDirectory();
+    expect(getUniqueFilePath(directory, "novo.md")).toBe(join(directory, "novo.md"));
+
+    writeFileSync(join(directory, "novo.md"), "");
+    expect(getUniqueFilePath(directory, "novo.md")).toBe(join(directory, "novo (2).md"));
+
+    writeFileSync(join(directory, "novo (2).md"), "");
+    expect(getUniqueFilePath(directory, "novo.md")).toBe(join(directory, "novo (3).md"));
+  });
+
+  test("resolve pasta existente para novo.md único dentro dela", () => {
+    const directory = makeTemporaryDirectory();
+    expect(resolveNewFileTarget(directory)).toBe(join(directory, "novo.md"));
+
+    writeFileSync(join(directory, "novo.md"), "");
+    expect(resolveNewFileTarget(directory)).toBe(join(directory, "novo (2).md"));
+  });
+
+  test("gera irmão único quando o caminho já existe como arquivo", () => {
+    const directory = makeTemporaryDirectory();
+    const existing = join(directory, "novo.md");
+    writeFileSync(existing, "");
+
+    expect(resolveNewFileTarget(existing)).toBe(join(directory, "novo (2).md"));
+  });
+
+  test("usa o caminho como está quando não existe com pasta-mãe válida", () => {
+    const directory = makeTemporaryDirectory();
+    const target = join(directory, "rascunho.md");
+
+    expect(resolveNewFileTarget(target)).toBe(target);
+  });
+
+  test("retorna null quando a pasta-mãe não existe", () => {
+    const directory = makeTemporaryDirectory();
+
+    expect(resolveNewFileTarget(join(directory, "ausente", "novo.md"))).toBeNull();
+  });
+
+  test("sem argumento cria novo.md na pasta atual (cenário Desktop)", () => {
+    const directory = makeTemporaryDirectory();
+    const previousCwd = process.cwd();
+    process.chdir(directory);
+    try {
+      expect(resolveNewFileTarget(undefined)).toBe(join(directory, "novo.md"));
+    } finally {
+      process.chdir(previousCwd);
+    }
   });
 });
 

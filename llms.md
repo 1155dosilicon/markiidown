@@ -14,7 +14,7 @@
    - Suporta arquivos Markdown (`.md`, `.markdown`), código-fonte (TypeScript, Python, Rust, Go, C/C++, SQL, HTML/CSS, Shell, etc.), arquivos de configuração (JSON, YAML, TOML, XML, ENV, Dockerfile), logs e texto plano.
    - Detecta e previne com segurança a renderização acidental de arquivos binários.
 3. **Editor Interativo TUI em Tela Cheia (`src/editor.ts`):**
-   - Ativado via `-E` / `--edit` ou pressionando `e` no leitor interativo.
+   - Ativado via `-E` / `--edit`, `--new` (sempre cria arquivo novo com nome único estilo Explorer) ou pressionando `e` no leitor interativo.
    - Buffer de tela cheia com numeração de linhas dinâmica, navegação precisa por cursor, inserção e remoção de caracteres/linhas, suporte a Tab (2 espaços) e auto-indentação.
    - Histórico de desfazer/refazer (Undo/Redo: `Ctrl+Z` / `Ctrl+Y`) em memória.
    - Salvamento direto e atômico no disco com `Ctrl+S` e confirmação ao fechar caso haja alterações não salvas.
@@ -30,8 +30,10 @@
    - Registra no Windows Shell via `HKCU\Software\Classes`:
      - `"Abrir com MarkiiDown"` em qualquer arquivo (`*\shell\MarkiiDown`).
      - `"Novo" -> "Documento Markdown"` (`.md\ShellNew`, `.markdown\ShellNew`, `MarkiiDown.Document`).
-     - `"Novo arquivo com MarkiiDown"` e `"Abrir pasta com MarkiiDown"` no fundo de pastas e área de trabalho (`Directory\Background`, `DesktopBackground`).
-     - Lista de aplicativos (`Applications\markiidown.exe`).
+     - `"Novo arquivo com MarkiiDown"` (`"%V\novo.md" --new` / `"%1\novo.md" --new`) e `"Abrir pasta com MarkiiDown"` sobre pastas, no fundo de pastas e no Desktop (`Directory\shell`, `Directory\Background`, `DesktopBackground`).
+     - Lista de aplicativos (`Applications\<nome-do-exe>`).
+   - Guarda as associações anteriores de `.md`/`.markdown` em `HKCU\Software\MarkiiDown\Backup` e as restaura no `--uninstall` (somente se o usuário não mudou depois).
+   - A resolução de pasta ignora arquivos de sistema (`desktop.ini`, `thumbs.db`) para nunca abri-los por engano.
    - Notifica o Windows Explorer para atualizar o cache de ícones imediatamente via `ie4uinit.exe -show`.
 7. **Modo Impressão Direta (`--print` / `-p`):** Exibe o conteúdo formatado com cores ANSI diretamente na saída padrão (stdout).
 8. **Modo Monitoramento (`--watch` / `-w`):** Observa a pasta do arquivo para sobreviver a salvamentos por substituição atômica e atualiza a exibição com debounce.
