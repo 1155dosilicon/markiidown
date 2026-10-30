@@ -7,7 +7,13 @@ import { runInteractiveEditor } from "./editor.ts";
 import { convertFileToStaticHtml } from "./html-template.ts";
 import { getInstalledExePath, installMarkiiDown, isRunningFromBunRuntime, uninstallMarkiiDown } from "./installer.ts";
 import { openInteractiveViewer, printDirectToTerminal, watchFileInTerminal } from "./terminal.ts";
-import { printBanner, resolveNewFileTarget, resolveTargetFile } from "./utils.ts";
+import {
+  detectFileType,
+  fixWindowsTrailingQuote,
+  printBanner,
+  resolveNewFileTarget,
+  resolveTargetFile,
+} from "./utils.ts";
 import { registerWindowsContextMenu, unregisterWindowsContextMenu } from "./windows-registry.ts";
 
 const VERSION = "2.0.0";
@@ -82,6 +88,7 @@ ${pc.bold(pc.yellow("EXEMPLOS:"))}
  */
 async function main(): Promise<void> {
   const options = parseCliArgs(process.argv.slice(2));
+  if (options.targetFile) options.targetFile = fixWindowsTrailingQuote(options.targetFile);
 
   switch (options.action) {
     case "help":
@@ -178,6 +185,9 @@ async function main(): Promise<void> {
   // Modo Exportação Estática
   if (mode === "export") {
     printBanner();
+    if (detectFileType(resolvedPath).isBinary) {
+      throw new Error(`Arquivos binários não podem ser exportados para HTML: ${resolvedPath}`);
+    }
     const file = Bun.file(resolvedPath);
     const rawText = await file.text();
     const fullHtml = convertFileToStaticHtml(rawText, resolvedPath);

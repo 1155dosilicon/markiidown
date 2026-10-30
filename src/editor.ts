@@ -1,6 +1,6 @@
 import readline from "node:readline";
 import pc from "picocolors";
-import { detectFileType } from "./utils.ts";
+import { detectFileType, TAB_SIZE } from "./utils.ts";
 
 export interface EditorResult {
   saved: boolean;
@@ -68,6 +68,94 @@ function padToWidth(text: string, width: number): string {
 }
 
 /**
+ * Mantém a quebra de linha original do arquivo (CRLF no Windows) ao salvar
+ */
+export function detectLineEnding(content: string): "\r\n" | "\n" {
+  return content.includes("\r\n") ? "\r\n" : "\n";
+}
+
+/*
+ * O cursor do editor é um índice na string (unidades UTF-16), mas a tela usa
+ * colunas visuais: TAB avança até a próxima parada e emoji/CJK ocupam 2
+ * colunas. As funções abaixo convertem entre as duas medidas.
+ */
+function graphemes(text: string): string[] {
+  return Array.from(graphemeSegmenter.segment(text), (part) => part.segment);
+}
+
+function graphemeWidth(segment: string, column: number): number {
+  return segment === "\t" ? TAB_SIZE - (column % TAB_SIZE) : Bun.stringWidth(segment);
+}
+
+export function displayColumn(line: string, index: number): number {
+  let column = 0;
+  for (const segment of graphemes(line.slice(0, index))) {
+    column += graphemeWidth(segment, column);
+  }
+  return column;
+}
+
+export function indexFromDisplayColumn(line: string, targetColumn: number): number {
+  let column = 0;
+  let index = 0;
+  for (const segment of graphemes(line)) {
+    const width = graphemeWidth(segment, column);
+    if (column + width > targetColumn) break;
+    column += width;
+    index += segment.length;
+  }
+  return index;
+}
+
+export function previousGraphemeIndex(line: string, index: number): number {
+  let position = 0;
+  for (const segment of graphemes(line)) {
+    if (position + segment.length >= index) return position;
+    position += segment.length;
+  }
+  return position;
+}
+
+export function nextGraphemeIndex(line: string, index: number): number {
+  let position = 0;
+  for (const segment of graphemes(line)) {
+    if (position >= index) return position + segment.length;
+    position += segment.length;
+  }
+  return line.length;
+}
+
+/**
+ * Converte a linha para texto de tela (TAB vira espaços) e recorta a janela
+ * visível [startColumn, startColumn + width) em colunas visuais.
+ */
+export function visibleLineSegment(line: string, startColumn: number, width: number): string {
+  let column = 0;
+  let result = "";
+  const endColumn = startColumn + width;
+
+  for (const segment of graphemes(line)) {
+    const segmentWidth = graphemeWidth(segment, column);
+    const text = segment === "\t" ? " ".repeat(segmentWidth) : segment;
+    const segmentEnd = column + segmentWidth;
+
+    if (segmentEnd > startColumn && column < endColumn) {
+      if (column >= startColumn && segmentEnd <= endColumn) {
+        result += text;
+      } else {
+        // Caractere largo cortado pela borda da janela: preenche com espaços
+        result += " ".repeat(Math.min(segmentEnd, endColumn) - Math.max(column, startColumn));
+      }
+    }
+
+    column = segmentEnd;
+    if (column >= endColumn) break;
+  }
+
+  return result;
+}
+
+/**
  * Editor Interativo de Terminal (TUI Text Editor)
  * Suporta navegação completa, inserção, deleção, quebras com indentação,
  * salvar via Ctrl+S, desfazer/refazer e diálogo seguro de saída.
@@ -76,10 +164,16 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
   const { filePath } = options;
   const file = Bun.file(filePath);
 
+  const typeInfo = detectFileType(filePath);
+
   let rawContent = options.initialContent;
   let isNewFile = false;
   if (rawContent === undefined) {
     if (await file.exists()) {
+      // Carregar um binário como texto e salvar corromperia o arquivo
+      if (typeInfo.isBinary) {
+        throw new Error(`Arquivos binários não podem ser editados: ${filePath}`);
+      }
       rawContent = await file.text();
     } else {
       rawContent = "";
@@ -87,11 +181,12 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
     }
   }
 
+  const lineEnding = detectLineEnding(rawContent);
+
   // Normaliza quebras de linha em array de linhas
   let lines = rawContent.split(/\r?\n/);
   if (lines.length === 0) lines = [""];
 
-  const typeInfo = detectFileType(filePath);
   const fileName = filePath.split(/[\\/]/).pop() || "arquivo";
 
   let cursorRow = 0;
@@ -117,6 +212,11 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
   const undoStack: HistoryState[] = [];
   const redoStack: HistoryState[] = [];
   const MAX_HISTORY = 100;
+
+  // Coluna visual desejada ao navegar com ↑/↓ entre linhas de tamanhos diferentes
+  function syncPreferredCol() {
+    preferredCol = displayColumn(lines[cursorRow], cursorCol);
+  }
 
   function pushHistory() {
     undoStack.push({
@@ -153,7 +253,7 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
 
   async function saveFile(): Promise<boolean> {
     try {
-      const contentToSave = lines.join("\n");
+      const contentToSave = lines.join(lineEnding);
       await Bun.write(filePath, contentToSave);
       isModified = false;
       wasSaved = true;
@@ -179,11 +279,12 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
       scrollTop = cursorRow - contentHeight + 1;
     }
 
-    // Ajusta scroll horizontal
-    if (cursorCol < scrollLeft) {
-      scrollLeft = cursorCol;
-    } else if (cursorCol >= scrollLeft + textWidth) {
-      scrollLeft = cursorCol - textWidth + 1;
+    // Ajusta scroll horizontal (em colunas visuais)
+    const cursorDisplayCol = displayColumn(lines[cursorRow], cursorCol);
+    if (cursorDisplayCol < scrollLeft) {
+      scrollLeft = cursorDisplayCol;
+    } else if (cursorDisplayCol >= scrollLeft + textWidth) {
+      scrollLeft = cursorDisplayCol - textWidth + 1;
     }
 
     let buffer = "";
@@ -192,7 +293,7 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
     buffer += `\x1B[1;1H\x1B[2K`;
     const dirtyIndicator = isModified ? pc.yellow("● [Modificado]") : pc.green("○ [Salvo]");
     const leftHeader = ` 📝 MarkiiDown Editor │ ${pc.bold(fileName)}  ${dirtyIndicator} (${typeInfo.description}) `;
-    const rightHeader = ` Ln ${cursorRow + 1}/${lines.length}, Col ${cursorCol + 1} `;
+    const rightHeader = ` Ln ${cursorRow + 1}/${lines.length}, Col ${cursorDisplayCol + 1} `;
 
     const leftLen = Bun.stringWidth(stripAnsi(leftHeader));
     const rightLen = Bun.stringWidth(stripAnsi(rightHeader));
@@ -217,8 +318,8 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
           ? pc.bold(pc.yellow(lineNumStr)) + pc.cyan(" │ ")
           : pc.dim(lineNumStr) + pc.dim(" │ ");
 
-        const visibleSegment = lineContent.slice(scrollLeft, scrollLeft + textWidth);
-        const styledText = pc.white(truncateAnsi(visibleSegment, textWidth));
+        const visibleSegment = visibleLineSegment(lineContent, scrollLeft, textWidth);
+        const styledText = pc.white(visibleSegment);
 
         buffer += gutter + styledText;
       } else {
@@ -242,7 +343,7 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
 
     // 4. Posiciona o cursor físico do terminal no ponto exato de edição
     const screenCursorRow = cursorRow - scrollTop + 2;
-    const screenCursorCol = gutterWidth + (cursorCol - scrollLeft) + 1;
+    const screenCursorCol = gutterWidth + (cursorDisplayCol - scrollLeft) + 1;
 
     if (
       screenCursorRow >= 2 &&
@@ -338,7 +439,7 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
           lines = prevState.lines;
           cursorRow = Math.min(lines.length - 1, prevState.cursorRow);
           cursorCol = Math.min(lines[cursorRow].length, prevState.cursorCol);
-          preferredCol = cursorCol;
+          syncPreferredCol();
           isModified = true;
           render();
         }
@@ -357,7 +458,7 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
           lines = nextState.lines;
           cursorRow = Math.min(lines.length - 1, nextState.cursorRow);
           cursorCol = Math.min(lines[cursorRow].length, nextState.cursorCol);
-          preferredCol = cursorCol;
+          syncPreferredCol();
           isModified = true;
           render();
         }
@@ -379,7 +480,7 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
       if (key && key.name === "up") {
         if (cursorRow > 0) {
           cursorRow--;
-          cursorCol = Math.min(lines[cursorRow].length, preferredCol);
+          cursorCol = indexFromDisplayColumn(lines[cursorRow], preferredCol);
           render();
         }
         return;
@@ -388,7 +489,7 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
       if (key && key.name === "down") {
         if (cursorRow < lines.length - 1) {
           cursorRow++;
-          cursorCol = Math.min(lines[cursorRow].length, preferredCol);
+          cursorCol = indexFromDisplayColumn(lines[cursorRow], preferredCol);
           render();
         }
         return;
@@ -396,13 +497,13 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
 
       if (key && key.name === "left") {
         if (cursorCol > 0) {
-          cursorCol--;
-          preferredCol = cursorCol;
+          cursorCol = previousGraphemeIndex(lines[cursorRow], cursorCol);
+          syncPreferredCol();
           render();
         } else if (cursorRow > 0) {
           cursorRow--;
           cursorCol = lines[cursorRow].length;
-          preferredCol = cursorCol;
+          syncPreferredCol();
           render();
         }
         return;
@@ -410,13 +511,13 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
 
       if (key && key.name === "right") {
         if (cursorCol < lines[cursorRow].length) {
-          cursorCol++;
-          preferredCol = cursorCol;
+          cursorCol = nextGraphemeIndex(lines[cursorRow], cursorCol);
+          syncPreferredCol();
           render();
         } else if (cursorRow < lines.length - 1) {
           cursorRow++;
           cursorCol = 0;
-          preferredCol = cursorCol;
+          syncPreferredCol();
           render();
         }
         return;
@@ -432,50 +533,54 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
         } else {
           cursorCol = firstNonSpace !== -1 ? firstNonSpace : 0;
         }
-        preferredCol = cursorCol;
+        syncPreferredCol();
         render();
         return;
       }
 
       if (key && key.name === "end") {
         cursorCol = lines[cursorRow].length;
-        preferredCol = cursorCol;
+        syncPreferredCol();
         render();
         return;
       }
 
       if (key && key.name === "pageup") {
         cursorRow = Math.max(0, cursorRow - getContentHeight());
-        cursorCol = Math.min(lines[cursorRow].length, preferredCol);
+        cursorCol = indexFromDisplayColumn(lines[cursorRow], preferredCol);
         render();
         return;
       }
 
       if (key && key.name === "pagedown") {
         cursorRow = Math.min(lines.length - 1, cursorRow + getContentHeight());
-        cursorCol = Math.min(lines[cursorRow].length, preferredCol);
+        cursorCol = indexFromDisplayColumn(lines[cursorRow], preferredCol);
         render();
         return;
       }
 
       // Edição de Texto
       // Backspace
+      // O histórico só é gravado quando há alteração real; um Backspace no
+      // início do arquivo não pode apagar a pilha de Refazer.
       if (key && key.name === "backspace") {
-        pushHistory();
         const curLine = lines[cursorRow];
         if (cursorCol > 0) {
-          lines[cursorRow] = curLine.slice(0, cursorCol - 1) + curLine.slice(cursorCol);
-          cursorCol--;
-          preferredCol = cursorCol;
+          pushHistory();
+          const previousIndex = previousGraphemeIndex(curLine, cursorCol);
+          lines[cursorRow] = curLine.slice(0, previousIndex) + curLine.slice(cursorCol);
+          cursorCol = previousIndex;
+          syncPreferredCol();
           isModified = true;
           render();
         } else if (cursorRow > 0) {
+          pushHistory();
           const prevLen = lines[cursorRow - 1].length;
           lines[cursorRow - 1] += curLine;
           lines.splice(cursorRow, 1);
           cursorRow--;
           cursorCol = prevLen;
-          preferredCol = cursorCol;
+          syncPreferredCol();
           isModified = true;
           render();
         }
@@ -484,13 +589,14 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
 
       // Delete
       if (key && key.name === "delete") {
-        pushHistory();
         const curLine = lines[cursorRow];
         if (cursorCol < curLine.length) {
-          lines[cursorRow] = curLine.slice(0, cursorCol) + curLine.slice(cursorCol + 1);
+          pushHistory();
+          lines[cursorRow] = curLine.slice(0, cursorCol) + curLine.slice(nextGraphemeIndex(curLine, cursorCol));
           isModified = true;
           render();
         } else if (cursorRow < lines.length - 1) {
+          pushHistory();
           lines[cursorRow] += lines[cursorRow + 1];
           lines.splice(cursorRow + 1, 1);
           isModified = true;
@@ -514,7 +620,7 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
         lines.splice(cursorRow + 1, 0, indent + rightPart);
         cursorRow++;
         cursorCol = indent.length;
-        preferredCol = cursorCol;
+        syncPreferredCol();
         isModified = true;
         render();
         return;
@@ -527,19 +633,19 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
         const spaces = "  "; // 2 espaços por padrão
         lines[cursorRow] = curLine.slice(0, cursorCol) + spaces + curLine.slice(cursorCol);
         cursorCol += spaces.length;
-        preferredCol = cursorCol;
+        syncPreferredCol();
         isModified = true;
         render();
         return;
       }
 
-      // Caracteres imprimíveis normais
-      if (str && str.length === 1 && !key.ctrl && !key.meta && str >= " ") {
+      // Caracteres imprimíveis, incluindo emoji (pares substitutos têm length 2)
+      if (str && !key?.ctrl && !key?.meta && !/[\x00-\x1F\x7F]/.test(str)) {
         pushHistory();
         const curLine = lines[cursorRow];
         lines[cursorRow] = curLine.slice(0, cursorCol) + str + curLine.slice(cursorCol);
         cursorCol += str.length;
-        preferredCol = cursorCol;
+        syncPreferredCol();
         isModified = true;
         render();
         return;

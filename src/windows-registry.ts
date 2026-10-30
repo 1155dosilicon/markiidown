@@ -121,17 +121,11 @@ export function buildRegisterCommands({ exePath, iconValue, appKeyName }: Contex
     ["reg", "add", `HKCU\\Software\\Classes\\${MARKIIDOWN_DOCUMENT_CLASS}\\shell\\edit\\command`, "/ve", "/d", `"${exePath}" "%1" --edit`, "/f"],
 
     // 4. Menu ao clicar SOBRE o ícone de uma pasta
-    ["reg", "add", "HKCU\\Software\\Classes\\Directory\\shell\\MarkiiDown", "/ve", "/d", "Abrir pasta com MarkiiDown", "/f"],
-    ["reg", "add", "HKCU\\Software\\Classes\\Directory\\shell\\MarkiiDown", "/v", "Icon", "/d", iconValue, "/f"],
-    ["reg", "add", "HKCU\\Software\\Classes\\Directory\\shell\\MarkiiDown\\command", "/ve", "/d", `"${exePath}" "%1"`, "/f"],
     ["reg", "add", "HKCU\\Software\\Classes\\Directory\\shell\\MarkiiDownNew", "/ve", "/d", "Novo arquivo com MarkiiDown", "/f"],
     ["reg", "add", "HKCU\\Software\\Classes\\Directory\\shell\\MarkiiDownNew", "/v", "Icon", "/d", iconValue, "/f"],
     ["reg", "add", "HKCU\\Software\\Classes\\Directory\\shell\\MarkiiDownNew\\command", "/ve", "/d", `"${exePath}" "%1\\novo.md" --new`, "/f"],
 
     // 5. Menu ao clicar com botão direito no FUNDO de pastas
-    ["reg", "add", "HKCU\\Software\\Classes\\Directory\\Background\\shell\\MarkiiDown", "/ve", "/d", "Abrir pasta com MarkiiDown", "/f"],
-    ["reg", "add", "HKCU\\Software\\Classes\\Directory\\Background\\shell\\MarkiiDown", "/v", "Icon", "/d", iconValue, "/f"],
-    ["reg", "add", "HKCU\\Software\\Classes\\Directory\\Background\\shell\\MarkiiDown\\command", "/ve", "/d", `"${exePath}" "%V"`, "/f"],
     ["reg", "add", "HKCU\\Software\\Classes\\Directory\\Background\\shell\\MarkiiDownNew", "/ve", "/d", "Novo arquivo com MarkiiDown", "/f"],
     ["reg", "add", "HKCU\\Software\\Classes\\Directory\\Background\\shell\\MarkiiDownNew", "/v", "Icon", "/d", iconValue, "/f"],
     ["reg", "add", "HKCU\\Software\\Classes\\Directory\\Background\\shell\\MarkiiDownNew\\command", "/ve", "/d", `"${exePath}" "%V\\novo.md" --new`, "/f"],
@@ -139,9 +133,6 @@ export function buildRegisterCommands({ exePath, iconValue, appKeyName }: Contex
     // 6. Menu ao clicar com botão direito no fundo do DESKTOP.
     // Usa "%V\novo.md" como nas pastas: sem o caminho, o programa abria
     // um arquivo existente ao acaso (o desktop.ini) em vez de criar um novo.
-    ["reg", "add", "HKCU\\Software\\Classes\\DesktopBackground\\shell\\MarkiiDown", "/ve", "/d", "Abrir pasta com MarkiiDown", "/f"],
-    ["reg", "add", "HKCU\\Software\\Classes\\DesktopBackground\\shell\\MarkiiDown", "/v", "Icon", "/d", iconValue, "/f"],
-    ["reg", "add", "HKCU\\Software\\Classes\\DesktopBackground\\shell\\MarkiiDown\\command", "/ve", "/d", `"${exePath}" "%V"`, "/f"],
     ["reg", "add", "HKCU\\Software\\Classes\\DesktopBackground\\shell\\MarkiiDownNew", "/ve", "/d", "Novo arquivo com MarkiiDown", "/f"],
     ["reg", "add", "HKCU\\Software\\Classes\\DesktopBackground\\shell\\MarkiiDownNew", "/v", "Icon", "/d", iconValue, "/f"],
     ["reg", "add", "HKCU\\Software\\Classes\\DesktopBackground\\shell\\MarkiiDownNew\\command", "/ve", "/d", `"${exePath}" "%V\\novo.md" --new`, "/f"],
@@ -155,6 +146,17 @@ export function buildRegisterCommands({ exePath, iconValue, appKeyName }: Contex
 }
 
 /**
+ * Chaves do antigo item "Abrir pasta com MarkiiDown", que não é mais
+ * registrado. São apagadas no --register/--install (para limpar instalações
+ * anteriores) e no --uninstall.
+ */
+export const LEGACY_FOLDER_MENU_KEYS = [
+  "HKCU\\Software\\Classes\\Directory\\shell\\MarkiiDown",
+  "HKCU\\Software\\Classes\\Directory\\Background\\shell\\MarkiiDown",
+  "HKCU\\Software\\Classes\\DesktopBackground\\shell\\MarkiiDown",
+];
+
+/**
  * Lista todas as chaves criadas pela integração, para remoção completa.
  * Inclui a chave de software (backups) — que deve ser apagada DEPOIS
  * de restaurar as associações — e as chaves de aplicativo informadas.
@@ -166,12 +168,10 @@ export function buildKeysToDelete(appKeyNames: string[]): string[] {
     "HKCU\\Software\\Classes\\.md\\ShellNew",
     "HKCU\\Software\\Classes\\.markdown\\ShellNew",
     `HKCU\\Software\\Classes\\${MARKIIDOWN_DOCUMENT_CLASS}`,
-    "HKCU\\Software\\Classes\\Directory\\shell\\MarkiiDown",
     "HKCU\\Software\\Classes\\Directory\\shell\\MarkiiDownNew",
-    "HKCU\\Software\\Classes\\Directory\\Background\\shell\\MarkiiDown",
     "HKCU\\Software\\Classes\\Directory\\Background\\shell\\MarkiiDownNew",
-    "HKCU\\Software\\Classes\\DesktopBackground\\shell\\MarkiiDown",
     "HKCU\\Software\\Classes\\DesktopBackground\\shell\\MarkiiDownNew",
+    ...LEGACY_FOLDER_MENU_KEYS,
     ...appKeyNames.map((name) => `HKCU\\Software\\Classes\\Applications\\${name}`),
     MARKIIDOWN_SOFTWARE_KEY,
   ];
@@ -199,11 +199,22 @@ async function queryRegDefault(key: string): Promise<string | null> {
 }
 
 /**
+ * Em um novo --register/--install a extensão já aponta para o MarkiiDown;
+ * gravar esse valor sobrescreveria o backup original e o uninstall
+ * restauraria a associação para a classe que ele mesmo apaga.
+ * Função pura (testável no Linux).
+ */
+export function shouldBackupAssociation(currentValue: string | null): boolean {
+  return currentValue !== MARKIIDOWN_DOCUMENT_CLASS;
+}
+
+/**
  * Guarda a associação anterior da extensão antes de sobrescrevê-la,
  * para que o uninstall restaure o estado original do usuário.
  */
 async function backupExtensionAssociation(extension: string): Promise<void> {
   const previous = await queryRegDefault(`HKCU\\Software\\Classes\\${extension}`);
+  if (!shouldBackupAssociation(previous)) return;
   await runReg(["reg", "add", MARKIIDOWN_BACKUP_KEY, "/v", extension, "/d", previous ?? "", "/f"]);
 }
 
@@ -222,7 +233,8 @@ async function restoreExtensionAssociation(extension: string): Promise<boolean> 
     const result = await runReg(["reg", "query", MARKIIDOWN_BACKUP_KEY, "/v", extension]);
     if (result.exitCode === 0) {
       const parsed = parseRegNamedValue(result.stdout, extension);
-      backup = parsed === "" ? null : parsed;
+      // Backups gravados por versões antigas podem conter a própria classe do MarkiiDown
+      backup = parsed === "" || parsed === MARKIIDOWN_DOCUMENT_CLASS ? null : parsed;
     }
   } catch {}
 
@@ -313,6 +325,17 @@ export async function registerWindowsContextMenu(customExePath?: string): Promis
     }
   }
 
+  // Remove o antigo "Abrir pasta com MarkiiDown" deixado por instalações anteriores
+  for (const key of LEGACY_FOLDER_MENU_KEYS) {
+    const query = await runReg(["reg", "query", key]);
+    if (query.exitCode !== 0) continue;
+    const removal = await runReg(["reg", "delete", key, "/f"]);
+    if (removal.exitCode !== 0) {
+      success = false;
+      console.warn(pc.yellow(`⚠️ Não foi possível remover a entrada antiga: ${key}`));
+    }
+  }
+
   // Notifica o Windows Explorer para atualizar ícones imediatamente
   await notifyWindowsShell();
 
@@ -320,8 +343,8 @@ export async function registerWindowsContextMenu(customExePath?: string): Promis
     console.log(pc.green("\n🎉 MarkiiDown registrado com sucesso no Windows!"));
     console.log(`\nAgora você pode:`);
     console.log(`  1. Clicar com o ${pc.bold("botão direito")} em qualquer arquivo e escolher ${pc.bold('"Abrir com MarkiiDown"')}.`);
-    console.log(`  2. Clicar com o ${pc.bold("botão direito")} ${pc.bold("sobre uma pasta")} -> ${pc.bold('"Abrir pasta com MarkiiDown"')} ou ${pc.bold('"Novo arquivo com MarkiiDown"')}.`);
-    console.log(`  3. Clicar com o ${pc.bold("botão direito")} no ${pc.bold("fundo da pasta ou do Desktop")} -> ${pc.bold('"Abrir pasta com MarkiiDown"')} ou ${pc.bold('"Novo arquivo com MarkiiDown"')}.`);
+    console.log(`  2. Clicar com o ${pc.bold("botão direito")} ${pc.bold("sobre uma pasta")} -> ${pc.bold('"Novo arquivo com MarkiiDown"')}.`);
+    console.log(`  3. Clicar com o ${pc.bold("botão direito")} no ${pc.bold("fundo da pasta ou do Desktop")} -> ${pc.bold('"Novo arquivo com MarkiiDown"')}.`);
     console.log(`  4. Clicar com o ${pc.bold("botão direito")} -> ${pc.bold('"Novo" -> "Documento Markdown"')}.`);
     console.log(`  5. Ir em ${pc.bold('"Abrir com..."')} -> ${pc.bold("MarkiiDown")} para definir como aplicativo padrão.`);
   }

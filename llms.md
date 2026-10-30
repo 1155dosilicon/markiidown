@@ -30,7 +30,7 @@
    - Registra no Windows Shell via `HKCU\Software\Classes`:
      - `"Abrir com MarkiiDown"` em qualquer arquivo (`*\shell\MarkiiDown`).
      - `"Novo" -> "Documento Markdown"` (`.md\ShellNew`, `.markdown\ShellNew`, `MarkiiDown.Document`).
-     - `"Novo arquivo com MarkiiDown"` (`"%V\novo.md" --new` / `"%1\novo.md" --new`) e `"Abrir pasta com MarkiiDown"` sobre pastas, no fundo de pastas e no Desktop (`Directory\shell`, `Directory\Background`, `DesktopBackground`).
+     - `"Novo arquivo com MarkiiDown"` (`"%V\novo.md" --new` / `"%1\novo.md" --new`) sobre pastas, no fundo de pastas e no Desktop (`Directory\shell`, `Directory\Background`, `DesktopBackground`).
      - Lista de aplicativos (`Applications\<nome-do-exe>`).
    - Guarda as associações anteriores de `.md`/`.markdown` em `HKCU\Software\MarkiiDown\Backup` e as restaura no `--uninstall` (somente se o usuário não mudou depois).
    - A resolução de pasta ignora arquivos de sistema (`desktop.ini`, `thumbs.db`) para nunca abri-los por engano.

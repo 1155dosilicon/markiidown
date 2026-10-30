@@ -60,9 +60,8 @@ Após a instalação:
 2. Clicar com o **botão direito** no espaço vazio de qualquer pasta ou área de trabalho exibe:
    - **"Novo" -> "Documento Markdown"** (cria um arquivo `.md` imediatamente, igual ao Bloco de Notas).
    - **"Novo arquivo com MarkiiDown"** (cria `novo.md`, `novo (2).md`... naquela pasta e abre o editor).
-   - **"Abrir pasta com MarkiiDown"** (abre o arquivo principal do diretório, ignorando `desktop.ini`/`thumbs.db`).
 3. Clicar com o **botão direito** em qualquer arquivo no Explorer exibe **"Abrir com MarkiiDown"**.
-4. Clicar com o **botão direito sobre o ícone de uma pasta** exibe **"Abrir pasta com MarkiiDown"** e **"Novo arquivo com MarkiiDown"** (cria o arquivo dentro daquela pasta).
+4. Clicar com o **botão direito sobre o ícone de uma pasta** exibe **"Novo arquivo com MarkiiDown"** (cria o arquivo dentro daquela pasta).
 5. Você pode associar o MarkiiDown como aplicativo padrão no *"Abrir com..."*.
 
 Para desinstalar e remover todas as entradas do sistema:

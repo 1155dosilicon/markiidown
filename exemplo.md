@@ -3,7 +3,7 @@
 Bem-vindo ao **MarkiiDown**, um leitor e visualizador moderno de Markdown desenvolvido em **TypeScript** com o runtime ultra-rápido **Bun**.
 
 > [!TIP]
-> O MarkiiDown suporta **Live-Reload**. Ao editar e salvar este arquivo no seu editor de código, a página web será atualizada automaticamente em tempo real!
+> O MarkiiDown suporta **atualização automática** com `--watch`. Ao editar e salvar este arquivo no seu editor de código, a visualização no terminal é atualizada em tempo real!
 
 ---
 
@@ -62,14 +62,14 @@ print(fibonacci(10))
 
 ## 📊 Tabelas Formatadas
 
-| Recurso | Modo CLI | Modo Web | Exportação HTML |
-| :--- | :---: | :---: | :---: |
-| **Renderização Markdown** | ✅ Sim | ✅ Sim | ✅ Sim |
-| **Syntax Highlighting** | ✅ Sim | ✅ Sim | ✅ Sim |
-| **Live-Reload (SSE)** | 🔄 `--watch` | ⚡ Automático | ❌ Estático |
-| **Sumário Interativo** | ❌ Não | ✅ Sim | ✅ Sim |
-| **Modo Escuro / Claro** | ⚙️ Terminal | 🌙/☀️ Toggle | 🌙/☀️ Toggle |
-| **Geração de PDF** | ❌ Não | 🖨️ Navegador | 🖨️ Navegador |
+| Recurso | Terminal | Exportação HTML |
+| :--- | :---: | :---: |
+| **Renderização Markdown** | ✅ Sim | ✅ Sim |
+| **Syntax Highlighting** | ✅ Sim | ✅ Sim |
+| **Atualização automática** | 🔄 `--watch` | ❌ Estático |
+| **Sumário Interativo** | ✅ Tecla `t` | ✅ Barra lateral |
+| **Modo Escuro / Claro** | ⚙️ Terminal | 🌙/☀️ Toggle |
+| **Geração de PDF** | ❌ Não | 🖨️ Navegador |
 
 ---
 

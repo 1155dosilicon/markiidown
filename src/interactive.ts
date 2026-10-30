@@ -1,7 +1,7 @@
 import readline from "node:readline";
 import pc from "picocolors";
 import { runInteractiveEditor } from "./editor.ts";
-import { formatBytes } from "./utils.ts";
+import { detectFileType, formatBytes, TAB_SIZE } from "./utils.ts";
 
 export interface InteractiveOptions {
   fileName: string;
@@ -21,6 +21,44 @@ const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme
 
 export function stripAnsi(text: string): string {
   return text.replace(ANSI_SEQUENCE, "");
+}
+
+/**
+ * Converte tabulações em espaços até a próxima parada de tabulação, ignorando
+ * sequências ANSI. `Bun.stringWidth("\t")` é 0, então sem esta etapa linhas
+ * com TAB ultrapassam a largura calculada e quebram o layout do terminal.
+ */
+export function expandTabsAnsi(str: string, tabSize = TAB_SIZE): string {
+  if (!str.includes("\t")) return str;
+
+  let result = "";
+  let column = 0;
+  let offset = 0;
+
+  while (offset < str.length) {
+    const remaining = str.slice(offset);
+    const ansiMatch = remaining.match(ANSI_SEQUENCE_AT_START);
+    if (ansiMatch) {
+      result += ansiMatch[0];
+      offset += ansiMatch[0].length;
+      continue;
+    }
+
+    const segment = graphemeSegmenter.segment(remaining)[Symbol.iterator]().next().value?.segment;
+    if (!segment) break;
+
+    if (segment === "\t") {
+      const spaces = tabSize - (column % tabSize);
+      result += " ".repeat(spaces);
+      column += spaces;
+    } else {
+      result += segment;
+      column += Bun.stringWidth(segment);
+    }
+    offset += segment.length;
+  }
+
+  return result;
 }
 
 /**
@@ -202,7 +240,7 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
 
     renderedLines.forEach((line, sourceLineIndex) => {
       nextSourceMap[sourceLineIndex] = nextVisualLines.length;
-      for (const wrappedLine of wrapAnsi(line, width)) {
+      for (const wrappedLine of wrapAnsi(expandTabsAnsi(line), width)) {
         nextVisualLines.push({ text: wrappedLine, sourceLineIndex });
       }
     });
@@ -521,6 +559,9 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
       }
 
       if (str === "e" || str === "E") {
+        // Abrir um binário no editor e salvar corromperia o arquivo
+        if (detectFileType(filePath).isBinary) return;
+
         cleanup();
         process.stdout.removeListener("resize", handleResize);
         process.stdin.removeListener("keypress", handleKeypress);

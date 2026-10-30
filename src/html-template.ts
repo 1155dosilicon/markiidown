@@ -2,7 +2,9 @@ import { Marked, Renderer, TextRenderer } from "marked";
 import { markedHighlight } from "marked-highlight";
 import hljs from "highlight.js";
 import { basename } from "node:path";
-import { calculateReadingTime, detectFileType, formatBytes } from "./utils.ts";
+import { calculateReadingTime, detectFileType, formatBytes, resolveHighlightLanguage } from "./utils.ts";
+
+const isHljsLanguage = (name: string) => !!hljs.getLanguage(name);
 
 const htmlMarked = new Marked();
 
@@ -11,8 +13,8 @@ htmlMarked.use(
     emptyLangClass: "hljs",
     langPrefix: "hljs language-",
     highlight(code, lang) {
-      const language = hljs.getLanguage(lang) ? lang : "plaintext";
-      return hljs.highlight(code, { language }).value;
+      const language = resolveHighlightLanguage(lang, isHljsLanguage) ?? "plaintext";
+      return hljs.highlight(code, { language, ignoreIllegals: true }).value;
     },
   })
 );
@@ -33,6 +35,36 @@ function escapeHtml(text: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+/**
+ * Divide o HTML do highlight.js em linhas mantendo cada linha bem formada:
+ * spans abertos (comentários e strings multilinha) são fechados no fim da
+ * linha e reabertos no início da seguinte, preservando a cor.
+ */
+export function splitHighlightedHtmlLines(html: string): string[] {
+  const lines: string[] = [];
+  const openTags: string[] = [];
+  let current = "";
+
+  for (const part of html.split(/(<span[^>]*>|<\/span>|\r?\n)/)) {
+    if (!part) continue;
+    if (part === "\n" || part === "\r\n") {
+      lines.push(current + "</span>".repeat(openTags.length));
+      current = openTags.join("");
+    } else if (part.startsWith("<span")) {
+      openTags.push(part);
+      current += part;
+    } else if (part === "</span>") {
+      openTags.pop();
+      current += part;
+    } else {
+      current += part;
+    }
+  }
+
+  lines.push(current + "</span>".repeat(openTags.length));
+  return lines;
 }
 
 function sanitizeUrl(url: string): string | null {
@@ -71,7 +103,8 @@ export function convertFileToStaticHtml(rawText: string, filePath: string): stri
     const trimmed = line.trim();
     const symbolMatch = trimmed.match(codeSymbolRegex);
     if (symbolMatch && symbolMatch[1]) {
-      const id = `sym-${index + 1}`;
+      // Aponta para o id da própria linha de código (id="L{n}")
+      const id = `L${index + 1}`;
       toc.push({
         id,
         text: escapeHtml(`${symbolMatch[0].split(/\s+/)[0]} ${symbolMatch[1]}`),
@@ -80,7 +113,7 @@ export function convertFileToStaticHtml(rawText: string, filePath: string): stri
     }
   });
 
-  const lang = typeInfo.language && hljs.getLanguage(typeInfo.language) ? typeInfo.language : "plaintext";
+  const lang = resolveHighlightLanguage(typeInfo.language, isHljsLanguage) ?? "plaintext";
   let highlightedHtml = "";
   try {
     highlightedHtml = hljs.highlight(rawText, { language: lang, ignoreIllegals: true }).value;
@@ -89,7 +122,7 @@ export function convertFileToStaticHtml(rawText: string, filePath: string): stri
   }
 
   // Divide o código realçado em linhas numeradas
-  const highlightedLines = highlightedHtml.split(/\r?\n/);
+  const highlightedLines = splitHighlightedHtmlLines(highlightedHtml);
   const numberedCodeHtml = highlightedLines
     .map((line, idx) => {
       const lineNum = idx + 1;
@@ -170,7 +203,8 @@ export function convertFileToStaticHtml(rawText: string, filePath: string): stri
     .toc-link:hover { color: var(--accent-color); background: var(--bg-tertiary); }
     main { flex: 1; padding: 24px; overflow-x: auto; }
     .code-container { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px; font-family: var(--font-mono); font-size: 0.9rem; line-height: 1.5; overflow-x: auto; }
-    .code-line { display: flex; }
+    .code-line { display: flex; scroll-margin-top: 70px; }
+    .code-line:target { background: var(--bg-tertiary); }
     .line-num { width: 45px; text-align: right; color: var(--text-muted); user-select: none; padding-right: 16px; }
     .line-content { flex: 1; white-space: pre; }
     .hljs { color: #c9d1d9; }

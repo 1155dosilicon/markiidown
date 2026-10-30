@@ -58,7 +58,7 @@ const EXTENSION_LANGUAGE_MAP: Record<string, { language: string; type: FileType;
   ".htm": { language: "html", type: "code", description: "HTML Document" },
   ".css": { language: "css", type: "code", description: "CSS Stylesheet" },
   ".scss": { language: "scss", type: "code", description: "SCSS Stylesheet" },
-  ".sass": { language: "sass", type: "code", description: "SASS Stylesheet" },
+  ".sass": { language: "scss", type: "code", description: "SASS Stylesheet" },
   ".less": { language: "less", type: "code", description: "LESS Stylesheet" },
 
   // Programming Languages
@@ -83,7 +83,8 @@ const EXTENSION_LANGUAGE_MAP: Record<string, { language: string; type: FileType;
   ".lua": { language: "lua", type: "code", description: "Lua Script" },
   ".r": { language: "r", type: "code", description: "R Script" },
   ".dart": { language: "dart", type: "code", description: "Dart Source" },
-  ".zig": { language: "zig", type: "code", description: "Zig Source" },
+  // highlight.js não tem gramática de Zig: exibido como código sem realce
+  ".zig": { language: "plaintext", type: "code", description: "Zig Source" },
 
   // Shell & Scripts
   ".sh": { language: "bash", type: "code", description: "Shell Script" },
@@ -248,6 +249,16 @@ export function detectFileType(filePath: string, sampleBuffer?: Uint8Array | Buf
 export function isMarkdownPath(filePath: string): boolean {
   const extension = extname(filePath).toLowerCase();
   return extension === ".md" || extension === ".markdown" || extension === ".mdown" || extension === ".mkd" || extension === ".mdx";
+}
+
+/**
+ * No Windows, o menu de contexto passa `"%V"`; na raiz de um disco isso vira
+ * `"C:\"` e a barra final escapa a aspa, chegando como `C:"`. Aspas não são
+ * válidas em caminhos do Windows, então a aspa final volta a ser a barra.
+ */
+export function fixWindowsTrailingQuote(inputPath: string, platform = process.platform): string {
+  if (platform !== "win32" || !inputPath.endsWith('"')) return inputPath;
+  return inputPath.slice(0, -1) + "\\";
 }
 
 /**
@@ -451,4 +462,40 @@ export function calculateReadingTime(text: string): { words: number; minutes: nu
   const words = text.trim().split(/\s+/).filter(Boolean).length;
   const minutes = words === 0 ? 0 : Math.max(1, Math.ceil(words / 200));
   return { words, minutes };
+}
+
+/**
+ * Largura de uma tabulação no leitor e no editor de terminal
+ */
+export const TAB_SIZE = 4;
+
+/**
+ * Linguagens sem gramática própria no highlight.js, realçadas com a
+ * gramática mais próxima. O terminal (cli-highlight, highlight.js 10) e o
+ * HTML (highlight.js 11) conhecem conjuntos diferentes de linguagens; os
+ * apelidos fazem os dois colorirem os mesmos blocos.
+ */
+const LANGUAGE_FALLBACKS: Record<string, string> = {
+  jsonc: "json",
+  json5: "json",
+  sass: "scss",
+  vue: "xml",
+  svelte: "xml",
+};
+
+/**
+ * Resolve o identificador de linguagem para um que o motor de realce
+ * conhece. Retorna undefined quando não há gramática: o bloco deve então
+ * ficar neutro, sem chamar o motor (que imprimiria um aviso no terminal).
+ */
+export function resolveHighlightLanguage(
+  language: string | undefined,
+  isSupported: (name: string) => boolean
+): string | undefined {
+  const normalized = language?.trim().split(/\s+/)[0]?.toLowerCase();
+  if (!normalized || normalized === "plaintext") return undefined;
+  if (isSupported(normalized)) return normalized;
+
+  const fallback = LANGUAGE_FALLBACKS[normalized];
+  return fallback && isSupported(fallback) ? fallback : undefined;
 }

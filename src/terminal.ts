@@ -1,15 +1,16 @@
-import { highlight as highlightCli } from "cli-highlight";
+import { highlight as highlightCli, supportsLanguage } from "cli-highlight";
 import { Marked } from "marked";
 import { markedTerminal } from "marked-terminal";
 import { watch } from "node:fs";
 import { basename, dirname } from "node:path";
 import pc from "picocolors";
-import { runInteractiveViewer, stripAnsi } from "./interactive.ts";
+import { expandTabsAnsi, runInteractiveViewer, stripAnsi } from "./interactive.ts";
 import {
   calculateReadingTime,
   detectFileType,
   formatBytes,
   isMarkdownPath,
+  resolveHighlightLanguage,
   type FileTypeInfo,
 } from "./utils.ts";
 
@@ -89,16 +90,17 @@ export function normalizeCliOptionHighlight(highlightedCode: string): string {
 }
 
 function renderCodeBlock(code: string, language?: string): string {
-  const normalizedLanguage = language?.trim().split(/\s+/)[0];
+  // Linguagem desconhecida (```vue, ```mermaid...) fica neutra, como um bloco sem linguagem
+  const resolvedLanguage = resolveHighlightLanguage(language, supportsLanguage);
   let renderedCode = code;
 
-  if (normalizedLanguage && pc.isColorSupported) {
+  if (resolvedLanguage && pc.isColorSupported) {
     try {
       renderedCode = normalizeCliOptionHighlight(
-        highlightCli(code, { language: normalizedLanguage, languageSubset: [] })
+        highlightCli(code, { language: resolvedLanguage, languageSubset: [] })
       );
     } catch {
-      renderedCode = pc.yellow(code);
+      renderedCode = code;
     }
   }
 
@@ -167,6 +169,11 @@ export function sanitizeTerminalInput(text: string): string {
   return text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "");
 }
 
+function addLineNumberGutter(lines: string[]): string[] {
+  const totalDigits = Math.max(2, String(lines.length).length);
+  return lines.map((line, index) => pc.dim(String(index + 1).padStart(totalDigits, " ")) + pc.cyan(" │ ") + line);
+}
+
 export interface RenderedFileResult {
   lines: string[];
   tableOfContents: { title: string; lineIndex: number }[];
@@ -216,11 +223,11 @@ export async function getRenderedFileLines(
   // 2. Se for Markdown e não estiver em modo --raw
   if (typeInfo.type === "markdown" && !options?.raw) {
     const renderedText = (await createTerminalMarked().parse(sanitizeTerminalInput(rawText))) as string;
-    const lines = renderedText.split(/\r?\n/);
+    const renderedLines = renderedText.split(/\r?\n/).map((line) => expandTabsAnsi(line));
 
     // Mapeia cabeçalhos para o Sumário
     const tableOfContents: { title: string; lineIndex: number }[] = [];
-    lines.forEach((line, index) => {
+    renderedLines.forEach((line, index) => {
       const plain = stripAnsi(line).trim();
       if (/^#{1,6}\s+/.test(plain)) {
         tableOfContents.push({
@@ -229,6 +236,9 @@ export async function getRenderedFileLines(
         });
       }
     });
+
+    // --numbers numera as linhas renderizadas; o sumário já foi extraído acima
+    const lines = options?.lineNumbers ? addLineNumberGutter(renderedLines) : renderedLines;
 
     return {
       lines,
@@ -240,9 +250,11 @@ export async function getRenderedFileLines(
   }
 
   // 3. Se for Código ou Configuração com Syntax Highlighting
-  const safeRawText = sanitizeTerminalInput(rawText);
-  const rawLines = safeRawText.split(/\r?\n/);
+  const rawLines = sanitizeTerminalInput(rawText).split(/\r?\n/);
+  const safeRawText = rawLines.map((line) => expandTabsAnsi(line)).join("\n");
   const totalDigits = Math.max(2, String(rawLines.length).length);
+  // Código mostra numeração por padrão; --raw remove, a menos que --numbers seja pedido
+  const showGutter = !options?.raw || !!options?.lineNumbers;
   const tableOfContents: { title: string; lineIndex: number }[] = [];
 
   // Mapeia símbolos de código (funções, classes, interfaces, structs, seções) para o sumário
@@ -251,10 +263,11 @@ export async function getRenderedFileLines(
   const sectionCommentRegex = /^(?:\/\/|#|\/\*|--)\s*(?:\[|\bREGION\b|\bSECTION\b|\bMARK\b|#+)\s*(.*)/i;
 
   let highlightedText = safeRawText;
-  if (typeInfo.language && typeInfo.language !== "plaintext" && !options?.raw && pc.isColorSupported) {
+  const resolvedLanguage = resolveHighlightLanguage(typeInfo.language, supportsLanguage);
+  if (resolvedLanguage && !options?.raw && pc.isColorSupported) {
     try {
       highlightedText = highlightCli(safeRawText, {
-        language: typeInfo.language,
+        language: resolvedLanguage,
         languageSubset: [],
         ignoreIllegals: true,
       });
@@ -269,7 +282,7 @@ export async function getRenderedFileLines(
   for (let i = 0; i < highlightedLines.length; i++) {
     const rawLine = rawLines[i] ?? "";
     const lineNumStr = String(i + 1).padStart(totalDigits, " ");
-    const gutter = pc.dim(lineNumStr) + pc.cyan(" │ ");
+    const gutter = showGutter ? pc.dim(lineNumStr) + pc.cyan(" │ ") : "";
     lines.push(gutter + (highlightedLines[i] ?? ""));
 
     // Extrai símbolos para o Sumário
@@ -358,6 +371,7 @@ export async function printDirectToTerminal(
     throw new Error(`Arquivo não encontrado: ${filePath}`);
   }
 
+  // Reaproveita as linhas já renderizadas em vez de processar o Markdown de novo
   const { lines, rawText, typeInfo } = await getRenderedFileLines(filePath, options);
   const fileName = sanitizeTerminalInput(basename(filePath));
   const displayPath = sanitizeTerminalInput(filePath);
@@ -378,19 +392,8 @@ export async function printDirectToTerminal(
   console.log(separator);
   console.log("");
 
-  if (typeInfo.type === "markdown" && !options?.raw) {
-    try {
-      const rendered = createTerminalMarked().parse(sanitizeTerminalInput(rawText));
-      console.log(rendered);
-    } catch {
-      for (const line of lines) {
-        console.log(line);
-      }
-    }
-  } else {
-    for (const line of lines) {
-      console.log(line);
-    }
+  for (const line of lines) {
+    console.log(line);
   }
 
   console.log(pc.dim("─".repeat(width)) + "\n");

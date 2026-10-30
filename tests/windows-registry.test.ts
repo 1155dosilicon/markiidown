@@ -3,6 +3,7 @@ import {
   buildKeysToDelete,
   buildRegisterCommands,
   formatIconValue,
+  LEGACY_FOLDER_MENU_KEYS,
   MARKIIDOWN_BACKUP_KEY,
   MARKIIDOWN_DOCUMENT_CLASS,
   MARKIIDOWN_SOFTWARE_KEY,
@@ -50,10 +51,12 @@ describe("buildRegisterCommands", () => {
     }
   });
 
-  test("abrir pasta existe nos três superfícies: ícone, fundo e Desktop", () => {
-    expect(commandData(commands, "Directory\\shell\\MarkiiDown\\command")).toBe(`"${EXE}" "%1"`);
-    expect(commandData(commands, "Directory\\Background\\shell\\MarkiiDown\\command")).toBe(`"${EXE}" "%V"`);
-    expect(commandData(commands, "DesktopBackground\\shell\\MarkiiDown\\command")).toBe(`"${EXE}" "%V"`);
+  test("pastas mostram só \"Novo arquivo\", sem o antigo \"Abrir pasta\"", () => {
+    const registeredKeys = commands.map((cmd) => cmd[2]);
+    for (const legacyKey of LEGACY_FOLDER_MENU_KEYS) {
+      expect(registeredKeys.some((key) => key === legacyKey || key.startsWith(`${legacyKey}\\`))).toBe(false);
+    }
+    expect(commands.some((cmd) => cmd.includes("Abrir pasta com MarkiiDown"))).toBe(false);
   });
 
   test("valores de ícone vão quotados para suportar espaços no caminho", () => {
