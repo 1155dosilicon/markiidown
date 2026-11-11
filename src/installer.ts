@@ -1,6 +1,6 @@
 import { copyFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, win32 } from "node:path";
 import pc from "picocolors";
 import { registerWindowsContextMenu, unregisterWindowsContextMenu } from "./windows-registry.ts";
 
@@ -21,7 +21,8 @@ export function getInstalledExePath(): string {
 }
 
 export function isRunningFromBunRuntime(executablePath = process.execPath): boolean {
-  const executableName = basename(executablePath).toLowerCase();
+  // win32.basename aceita "/" e "\\", então funciona com caminhos de qualquer sistema.
+  const executableName = win32.basename(executablePath).toLowerCase();
   return executableName === "bun" || executableName === "bun.exe";
 }
 

@@ -45,11 +45,11 @@ Inclui suporte completo a **edição interativa no terminal com salvamento no di
 
 ## ⚡ Instalação Rápida no Windows (Sem Administrador)
 
-Com o executável `markiidown.exe` ou código-fonte em mãos, basta executar:
+Baixe o `markiidown.exe` na [última versão](https://github.com/1155dosilicon/markiidown/releases/latest) e, na pasta onde ele está, execute:
 
 ```powershell
 # Instala em %LOCALAPPDATA%\MarkiiDown, adiciona ao PATH e ao menu de contexto
-.\dist\markiidown.exe --install
+.\markiidown.exe --install
 
 # Ou via código-fonte; este comando compila o standalone antes de instalá-lo:
 bun run src/index.ts --install
@@ -153,7 +153,7 @@ Para gerar o binário standalone:
 bun run build:exe
 ```
 
-O arquivo executável standalone será gerado em [`dist/markiidown.exe`](./dist/markiidown.exe).
+O arquivo executável standalone será gerado em `dist/markiidown.exe`.
 
 ## ✅ Verificação e Testes do Projeto
 

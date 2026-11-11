@@ -1,0 +1,39 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag da release que recebe o .exe"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Instalar dependências
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck e testes
+        run: bun run check
+
+      - name: Gerar markiidown.exe
+        run: bun run build
+
+      - name: Anexar à release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          gh release view $env:TAG 2>$null
+          if ($LASTEXITCODE -ne 0) { gh release create $env:TAG --title "MarkiiDown $env:TAG" --generate-notes }
+          gh release upload $env:TAG dist/markiidown.exe --clobber
