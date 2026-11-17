@@ -9,6 +9,7 @@ import {
   MARKIIDOWN_BACKUP_KEY,
   MARKIIDOWN_DOCUMENT_CLASS,
   MARKIIDOWN_SOFTWARE_KEY,
+  parseApplicationKeysFromSearch,
   parseRegDefaultValue,
   parseRegNamedValue,
   parseRegSubkeys,
@@ -171,6 +172,29 @@ describe("reg output parsers", () => {
       "HKEY_CURRENT_USER\\Software\\Classes\\Applications\\outro.exe",
     ]);
     expect(parseRegSubkeys("HKEY_CURRENT_USER\\Software\\Classes\\Applications\r\n")).toEqual([]);
+  });
+});
+
+describe("parseApplicationKeysFromSearch", () => {
+  test("acha as chaves de aplicativo cujo comando de abrir aponta para o MarkiiDown", () => {
+    const output = [
+      "",
+      "HKEY_CURRENT_USER\\Software\\Classes\\Applications\\markiidown.exe\\shell\\open\\command",
+      '    (padrão)    REG_SZ    "C:\\Apps\\markiidown.exe" "%1"',
+      "",
+      "HKEY_CURRENT_USER\\Software\\Classes\\Applications\\markiidown.exe\\shell\\edit\\command",
+      '    (padrão)    REG_SZ    "C:\\Apps\\markiidown.exe" "%1" --edit',
+      "",
+      "HKEY_CURRENT_USER\\Software\\Classes\\Applications\\md-renomeado.exe\\shell\\open\\command",
+      '    (Default)    REG_SZ    "D:\\x\\md-renomeado.exe" "%1"',
+      "",
+      "Fim da pesquisa: 3 correspondência(s) encontrada(s).",
+    ].join("\r\n");
+    expect(parseApplicationKeysFromSearch(output)).toEqual([
+      "HKEY_CURRENT_USER\\Software\\Classes\\Applications\\markiidown.exe",
+      "HKEY_CURRENT_USER\\Software\\Classes\\Applications\\md-renomeado.exe",
+    ]);
+    expect(parseApplicationKeysFromSearch("Fim da pesquisa: 0 correspondência(s) encontrada(s).")).toEqual([]);
   });
 });
 

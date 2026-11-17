@@ -106,11 +106,12 @@ export async function readTextFile(filePath: string): Promise<DecodedText> {
 }
 
 /**
- * Indica se o texto mistura finais de linha CRLF e LF. O editor trabalha com
- * um único final de linha e normaliza o arquivo ao salvar.
+ * Indica se o texto mistura finais de linha (CRLF, LF e CR sozinho). O editor
+ * trabalha com um único final de linha e normaliza o arquivo ao salvar.
  */
 export function hasMixedLineEndings(text: string): boolean {
   const crlf = (text.match(/\r\n/g) ?? []).length;
-  const lf = (text.match(/\n/g) ?? []).length;
-  return crlf > 0 && crlf < lf;
+  const lf = (text.match(/\n/g) ?? []).length - crlf;
+  const cr = (text.match(/\r/g) ?? []).length - crlf;
+  return [crlf, lf, cr].filter((count) => count > 0).length > 1;
 }

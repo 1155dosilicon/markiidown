@@ -12,12 +12,19 @@ on:
 permissions:
   contents: write
 
+env:
+  # Sem estatísticas de uso do Bun
+  DO_NOT_TRACK: "1"
+
 jobs:
   build-exe:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Mesma versão usada no desenvolvimento (Bun.Terminal no Windows, usado nos testes de ponta a ponta)
+          bun-version: 1.4.4
 
       - name: Instalar dependências
         run: bun install --frozen-lockfile
@@ -27,6 +34,12 @@ jobs:
 
       - name: Gerar markiidown.exe
         run: bun run build
+
+      - name: Testes de ponta a ponta com o .exe gerado
+        shell: pwsh
+        run: |
+          $env:MARKIIDOWN_E2E_EXE = (Resolve-Path dist/markiidown.exe).Path
+          bun test tests/e2e.test.ts
 
       - name: Anexar à release
         shell: pwsh

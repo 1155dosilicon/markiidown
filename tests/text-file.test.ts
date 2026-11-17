@@ -1,7 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { describe, expect, test } from "bun:test";
 import {
   decodeTextBuffer,
   encodeText,
@@ -10,10 +7,7 @@ import {
   type TextEncodingName,
 } from "../src/text-file.ts";
 
-const directories: string[] = [];
-afterAll(() => {
-  for (const directory of directories) rmSync(directory, { recursive: true, force: true });
-});
+// Os testes do editor salvando em cada codificação estão em editor.test.ts
 
 describe("decodeTextBuffer", () => {
   test("arquivo ANSI (Windows-1252) mantém os acentos", () => {
@@ -65,80 +59,11 @@ describe("encodeText", () => {
 });
 
 describe("hasMixedLineEndings", () => {
-  test("só acusa quando CRLF e LF aparecem juntos", () => {
+  test("só acusa quando há mais de um tipo de final de linha (CRLF, LF, CR)", () => {
     expect(hasMixedLineEndings("a\r\nb\r\n")).toBe(false);
     expect(hasMixedLineEndings("a\nb\n")).toBe(false);
     expect(hasMixedLineEndings("a\r\nb\nc")).toBe(true);
-  });
-});
-
-describe("editor preserva a codificação ao salvar", () => {
-  async function editWithKeys(filePath: string, keys: [string | undefined, Partial<import("node:readline").Key>][]) {
-    const { runInteractiveEditor } = await import("../src/editor.ts");
-    const originalWrite = process.stdout.write;
-    // O editor desenha a tela inteira; o teste não precisa dessa saída
-    process.stdout.write = (() => true) as typeof process.stdout.write;
-    try {
-      const listenersBefore = process.stdin.listenerCount("keypress");
-      const pending = runInteractiveEditor({ filePath });
-      // O editor lê o arquivo antes de começar a ouvir o teclado
-      while (process.stdin.listenerCount("keypress") === listenersBefore) {
-        await Bun.sleep(5);
-      }
-      for (const [str, key] of keys) process.stdin.emit("keypress", str, key);
-      return await pending;
-    } finally {
-      process.stdout.write = originalWrite;
-      process.stdin.pause();
-    }
-  }
-
-  test("arquivo ANSI editado continua ANSI e com os acentos intactos", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "markiidown-encoding-"));
-    directories.push(directory);
-    const filePath = join(directory, "ansi.txt");
-    writeFileSync(filePath, new Uint8Array([0x41, 0xe7, 0xe3, 0x6f])); // "Ação"
-
-    const result = await editWithKeys(filePath, [
-      [undefined, { name: "end" }],
-      ["é", { name: undefined, sequence: "é" }],
-      [undefined, { name: "s", ctrl: true }],
-      [undefined, { name: "escape" }],
-    ]);
-
-    expect(result.saved).toBe(true);
-    expect([...readFileSync(filePath)]).toEqual([0x41, 0xe7, 0xe3, 0x6f, 0xe9]);
-  });
-
-  test("emoji em arquivo ANSI é salvo em UTF-8 em vez de ser perdido", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "markiidown-encoding-"));
-    directories.push(directory);
-    const filePath = join(directory, "ansi.txt");
-    writeFileSync(filePath, new Uint8Array([0xe7])); // "ç"
-
-    await editWithKeys(filePath, [
-      [undefined, { name: "end" }],
-      ["😀", { name: undefined, sequence: "😀" }],
-      [undefined, { name: "s", ctrl: true }],
-      [undefined, { name: "escape" }],
-    ]);
-
-    expect(readFileSync(filePath, "utf-8")).toBe("ç😀");
-  });
-
-  test("BOM do UTF-8 continua no arquivo após salvar", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "markiidown-encoding-"));
-    directories.push(directory);
-    const filePath = join(directory, "bom.md");
-    writeFileSync(filePath, Buffer.from([0xef, 0xbb, 0xbf, ...Buffer.from("oi")]));
-
-    await editWithKeys(filePath, [
-      [undefined, { name: "end" }],
-      ["!", { name: undefined, sequence: "!" }],
-      [undefined, { name: "s", ctrl: true }],
-      [undefined, { name: "escape" }],
-    ]);
-
-    expect([...readFileSync(filePath)]).toEqual([0xef, 0xbb, 0xbf, 0x6f, 0x69, 0x21]);
+    expect(hasMixedLineEndings("a\rb\nc")).toBe(true);
+    expect(hasMixedLineEndings("a\rb\rc")).toBe(false);
   });
 });

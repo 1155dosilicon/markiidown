@@ -1,110 +1,128 @@
-# 🚀 MarkiiDown - Documento de Demonstração
+# 🚀 MarkiiDown — documento de demonstração
 
-Bem-vindo ao **MarkiiDown**, um leitor e visualizador moderno de Markdown desenvolvido em **TypeScript** com o runtime ultra-rápido **Bun**.
+Este arquivo mostra tudo o que o **MarkiiDown** formata no terminal. Abra com
+`markiidown exemplo.md`, role com as setas, busque com `/` e veja o sumário com `t`.
 
 > [!TIP]
-> O MarkiiDown suporta **atualização automática** com `--watch`. Ao editar e salvar este arquivo no seu editor de código, a visualização no terminal é atualizada em tempo real!
+> Com `markiidown exemplo.md --watch` a tela é atualizada sozinha sempre que
+> este arquivo for salvo por qualquer editor.
 
 ---
 
-## 📑 Sumário de Recursos
+## 📑 Sumário
 
-1. [Sintaxe de Código e Realce](#sintaxe-de-código-e-realce)
-2. [Tabelas Formatadas](#tabelas-formatadas)
-3. [Listas de Tarefas](#listas-de-tarefas)
-4. [Alertas Estilo GitHub](#alertas-estilo-github)
-5. [Citações e Destaques](#citações-e-destaques)
+1. [Texto e links](#-texto-e-links)
+2. [Código com realce de sintaxe](#-código-com-realce-de-sintaxe)
+3. [Tabelas](#-tabelas)
+4. [Listas](#-listas)
+5. [Alertas e citações](#-alertas-e-citações)
 
 ---
 
-## 💻 Sintaxe de Código e Realce
+## 📝 Texto e links
 
-O MarkiiDown utiliza o `highlight.js` para fornecer realce de sintaxe em tempo real para dezenas de linguagens:
+Parágrafos podem ter **negrito**, *itálico*, ~~riscado~~ e `código em linha`.
+Quebras de linha simples no arquivo viram espaço, como no GitHub; o texto é
+reorganizado para a largura do terminal.\
+Uma barra invertida (ou dois espaços) no fim da linha força a quebra.
 
-### Exemplo em TypeScript:
+Links aparecem com o endereço: [site do Bun](https://bun.sh). Endereços soltos
+também: https://github.com. No Windows Terminal, eles são clicáveis.
+
+Emoji por código também funcionam: :tada: :white_check_mark: :warning:
+
+![Logotipo do MarkiiDown](assets/icon.ico)
+
+---
+
+## 💻 Código com realce de sintaxe
+
+### TypeScript
+
 ```typescript
 interface Usuario {
   id: number;
   nome: string;
-  ativo: boolean;
 }
 
 export function saudar(usuario: Usuario): string {
-  return `Olá, ${usuario.nome}! Bem-vindo ao MarkiiDown.`;
+  return `Olá, ${usuario.nome}!`;
 }
-
-console.log(saudar({ id: 1, nome: "Dev", ativo: true }));
 ```
 
-### Exemplo em Python:
+### Python
+
 ```python
 def fibonacci(n: int) -> list[int]:
-    """Gera sequência de Fibonacci até n elementos."""
-    seq = [0, 1]
-    while len(seq) < n:
-        seq.append(seq[-1] + seq[-2])
-    return seq[:n]
-
-print(fibonacci(10))
+    """Gera os n primeiros números de Fibonacci."""
+    sequencia = [0, 1]
+    while len(sequencia) < n:
+        sequencia.append(sequencia[-1] + sequencia[-2])
+    return sequencia[:n]
 ```
 
-### Exemplo em JSON:
+### PowerShell
+
+```powershell
+# Instala e integra ao Explorer, sem administrador
+.\markiidown.exe --install
+markiidown exemplo.md --export exemplo.html
+```
+
+### JSON
+
 ```json
 {
   "nome": "markiidown",
-  "versao": "1.0.0",
-  "autor": "Comunidade Bun",
-  "recursos": ["Live-Reload", "Modo Escuro/Claro", "Terminal CLI", "Compilação .EXE"]
+  "recursos": ["leitor", "editor", "exportação HTML"],
+  "offline": true
 }
 ```
 
 ---
 
-## 📊 Tabelas Formatadas
+## 📊 Tabelas
 
-| Recurso | Terminal | Exportação HTML |
-| :--- | :---: | :---: |
-| **Renderização Markdown** | ✅ Sim | ✅ Sim |
-| **Syntax Highlighting** | ✅ Sim | ✅ Sim |
-| **Atualização automática** | 🔄 `--watch` | ❌ Estático |
-| **Sumário Interativo** | ✅ Tecla `t` | ✅ Barra lateral |
-| **Modo Escuro / Claro** | ⚙️ Terminal | 🌙/☀️ Toggle |
-| **Geração de PDF** | ❌ Não | 🖨️ Navegador |
+| Recurso                 | Terminal        | HTML exportado   |
+| :---------------------- | :-------------: | :--------------: |
+| Markdown formatado      | ✅              | ✅               |
+| Realce de sintaxe       | ✅              | ✅               |
+| Sumário                 | Tecla `t`       | Barra lateral    |
+| Tema claro/escuro       | O do terminal   | Botão no topo    |
+| Imprimir / PDF          | —               | Pelo navegador   |
 
----
-
-## 📋 Listas de Tarefas
-
-- [x] Suporte nativo a TypeScript com Bun
-- [x] Leitor rápido direto no terminal (`--cli`)
-- [x] Servidor Web local com Live Reload em tempo real
-- [x] Sumário lateral interativo com ScrollSpy
-- [x] Botões de cópia rápida para todos os blocos de código
-- [x] Script de compilação para executável standalone `.exe` (Windows)
-- [ ] Exportação direta para PDF via linha de comando
+Tabelas largas encolhem para caber na tela e as células quebram em várias linhas.
 
 ---
 
-## 🔔 Alertas Estilo GitHub
+## 📋 Listas
+
+- [x] Leitor interativo com busca e sumário
+- [x] Editor com desfazer, refazer e salvamento seguro
+- [x] Exportação para HTML autocontido
+- [ ] Algo que ainda falta fazer
+
+1. Primeiro passo
+2. Segundo passo, com uma lista dentro:
+   - item aninhado
+   - outro item aninhado
+3. Terceiro passo
+
+---
+
+## 🔔 Alertas e citações
 
 > [!NOTE]
-> Este é um alerta informativo de nota para destacar contextos relevantes.
-
-> [!TIP]
-> Você pode alternar entre o tema Escuro e Claro clicando no botão no topo direito da tela ou pressionando a tecla de atalho.
+> Informação útil que o leitor deve notar.
 
 > [!IMPORTANT]
-> A geração de `.exe` standalone com Bun embute o runtime, o código e as dependências em um único arquivo portátil.
+> Algo essencial para entender o assunto.
 
 > [!WARNING]
-> Certifique-se de que a porta 3333 esteja livre ou utilize a flag `-p <porta>` para especificar outra porta.
+> Atenção: requer cuidado imediato.
 
 > [!CAUTION]
-> Ao exportar documentos sensíveis em HTML, verifique se não há tokens ou segredos expostos no Markdown.
-
----
-
-## 💬 Citações e Destaques
+> Riscos ou consequências negativas de uma ação.
 
 > "A simplicidade é o último grau de sofisticação."
 > — *Leonardo da Vinci*

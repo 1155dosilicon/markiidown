@@ -1,6 +1,6 @@
 import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
-import pc from "picocolors";
+import { pc } from "./colors.ts";
 
 export type FileType = "markdown" | "code" | "text" | "binary";
 
@@ -285,6 +285,27 @@ export function extractCodeSymbol(line: string): string | null {
   return `${match[1]} ${match[2]}`;
 }
 
+/** Comentários de seção: `// region Nome`, `# MARK: Nome`, `-- SECTION Nome`, `// [Nome]`, `## Nome`. */
+const SECTION_COMMENT = /^(?:\/\/|#|\/\*|--)\s*(?:\[|\bREGION\b|\bSECTION\b|\bMARK\b:?|#+)\s*(.*)/i;
+
+/**
+ * Sumário de um arquivo de código: funções, classes e demais símbolos, mais
+ * os comentários de seção. Usado pelo leitor (tecla `t`) e pela exportação HTML.
+ */
+export function extractCodeTableOfContents(lines: string[]): { title: string; lineIndex: number }[] {
+  const entries: { title: string; lineIndex: number }[] = [];
+  lines.forEach((line, lineIndex) => {
+    const symbol = extractCodeSymbol(line);
+    if (symbol) {
+      entries.push({ title: symbol, lineIndex });
+      return;
+    }
+    const title = SECTION_COMMENT.exec(line.trim())?.[1]?.replace(/\*\/$/, "").replace(/\]$/, "").trim();
+    if (title) entries.push({ title, lineIndex });
+  });
+  return entries;
+}
+
 /**
  * Informa se o caminho usa uma extensão Markdown suportada.
  */
@@ -513,9 +534,7 @@ export const TAB_SIZE = 4;
 
 /**
  * Linguagens sem gramática própria no highlight.js, realçadas com a
- * gramática mais próxima. O terminal (cli-highlight, highlight.js 10) e o
- * HTML (highlight.js 11) conhecem conjuntos diferentes de linguagens; os
- * apelidos fazem os dois colorirem os mesmos blocos.
+ * gramática mais próxima (o terminal e o HTML usam o mesmo highlight.js 11).
  */
 const LANGUAGE_FALLBACKS: Record<string, string> = {
   jsonc: "json",

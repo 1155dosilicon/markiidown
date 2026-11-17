@@ -1,218 +1,178 @@
-# 🚀 MarkiiDown
+# MarkiiDown
 
 <p align="center">
   <a href="./README.md">🇧🇷 Português</a> | <b>🇺🇸 English</b> | <a href="./README.es.md">🇪🇸 Español</a>
 </p>
 
-<p align="center">
-  <b>100% Standalone, lightweight, and offline Universal File and Markdown Reader & Editor built with TypeScript and Bun.</b>
-</p>
+A **Markdown**, **source code** and **text** reader and editor for the Windows
+terminal. A single `markiidown.exe` with nothing else to install, 100% offline
+(it opens no ports and never touches the network).
 
----
+- **Reader**: formatted Markdown (headings, lists, tables, quotes, GitHub
+  alerts, links, emoji), syntax highlighting for dozens of languages, search,
+  table of contents and scrolling.
+- **Editor** right in the terminal: undo/redo, pasting without mangling
+  indentation, safe saving that keeps the file's encoding.
+- **Export** to a self-contained HTML file (light/dark theme, table of
+  contents, ready to print or save as PDF).
+- **Explorer integration**, no administrator needed: “Open with MarkiiDown”,
+  “New → Markdown Document”, “New file with MarkiiDown”.
 
-**MarkiiDown** is a high-performance universal file reader and editor designed to run directly in the terminal as an interactive TUI (Pager & Editor) or via the command line. It operates **100% offline**, without creating local web servers, without opening network ports, and without depending on heavy editors or external web browsers.
+Every version's changes are listed in [CHANGELOG.md](CHANGELOG.md) (in Portuguese).
 
-It supports **formatted Markdown**, **source code** (TypeScript, JavaScript, Python, Rust, Go, C/C++, HTML, CSS, SQL, Shell, and dozens more) with real-time syntax highlighting, **configuration files** (JSON, YAML, TOML, XML, ENV, Dockerfile), **plain text**, and **safe protection against binary files**.
+## Installation (Windows)
 
-It includes full support for **interactive terminal editing with in-place disk save (`Ctrl+S`)**, **non-admin user installation (`%LOCALAPPDATA%`)**, Windows Explorer **context menu integration ("Open with MarkiiDown")**, **"New" -> "Markdown Document"** menu, and compilation into a standalone portable **Windows `.exe` binary**.
-
----
-
-## ✨ Key Features
-
-- 📄 **Universal Reader & Editor**: Open and edit Markdown, source code in 30+ languages, JSON/YAML/TOML, logs, and plain text.
-- ✏️ **Integrated TUI Editor (`-E` / `--edit` or `e` key)**: Full-screen terminal text editing with in-place disk saving (`Ctrl+S`), Undo/Redo (`Ctrl+Z`/`Ctrl+Y`), Tab indentation, line numbering, and live cursor navigation.
-- 🎨 **Automatic Syntax Highlighting**: Complete syntax highlighting for source code files and fenced Markdown blocks.
-- 🔒 **100% Standalone & Offline**: Zero HTTP servers, zero open ports, and zero network traffic.
-- 🪟 **Non-Admin User Installer (`--install`)**: Installs to `%LOCALAPPDATA%\MarkiiDown`, automatically adds to User `PATH`, and registers Windows Explorer context menus.
-- 🖱️ **Windows Explorer Integration**: *"Open with MarkiiDown"* right-click option, *"New file with MarkiiDown"*, and native support for Windows *"Open with..."* association.
-- 📖 **Interactive Terminal Viewer (TUI Pager)**: Smooth navigation, responsive line wrapping without content loss, scrolling, reading progress, and real-time text search (`/`).
-- 📑 **Built-in Table of Contents & Code Symbols**: Press `t` to list and jump directly to Markdown headings or functions/classes/symbols in code files.
-- 💻 **Direct Print Mode (`--print` / `-p`)**: Outputs formatted and colored content directly to standard output (stdout), perfect for scripts and pipes.
-- 🔄 **Continuous Watch Mode (`--watch` / `-w`)**: Watches changes and atomic file replacements in real time and refreshes the display.
-- 📤 **Static HTML Export (`--export` / `-e`)**: Generates self-contained `.html` with embedded CSS, line numbers, dark/light theme, and syntax highlighting, without a CDN.
-- 🛡️ **Binary Protection**: Detects and prevents binary files from corrupting the terminal.
-- 📦 **Standalone Windows Executable (`.exe`)**: Bundles Bun runtime, source code, and all dependencies into a single portable binary with a custom icon.
-
----
-
-## 📥 Requirements
-
-- [Bun](https://bun.sh) (v1.3+) for development, testing, and compilation.
-- *Note:* The compiled standalone binary (`markiidown.exe`) runs on Windows x64 **without requiring Bun, Node.js, or any external dependencies**.
-
----
-
-## ⚡ Quick Windows Installation (No Admin Required)
-
-Download `markiidown.exe` from the [latest release](https://github.com/1155dosilicon/markiidown/releases/latest) and, in the folder where it is, run:
+Download `markiidown.exe` from the [latest release](https://github.com/1155dosilicon/markiidown/releases/latest)
+and, in the folder where it is:
 
 ```powershell
-# Installs to %LOCALAPPDATA%\MarkiiDown, adds to User PATH, and sets up context menu
 .\markiidown.exe --install
-
-# Or from source; this compiles the standalone executable before installing it:
-bun run src/index.ts --install
 ```
 
-After installation:
-1. The `markiidown` command becomes available in new Command Prompt or PowerShell windows (reopen the terminal after installation).
-2. Right-clicking in the empty space of any folder or the desktop displays:
-   - **"New" -> "Markdown Document"** (creates a `.md` file immediately, just like Notepad).
-   - **"New file with MarkiiDown"** (creates `novo.md`, `novo (2).md`... in that folder and opens the editor).
-3. Right-clicking any file in Explorer displays **"Open with MarkiiDown"**.
-4. Right-clicking a folder icon displays **"New file with MarkiiDown"** (creates the file inside that folder).
-5. You can set MarkiiDown as the default application for Markdown files in *"Open with..."*.
+This:
 
-To uninstall and clean up all system entries:
+1. copies the program to `%LOCALAPPDATA%\MarkiiDown\markiidown.exe`;
+2. adds that folder to your user `PATH` (open a new terminal afterwards);
+3. registers it in Explorer (for your user only, under `HKCU\Software\Classes`):
+   - **Open with MarkiiDown** when right-clicking any file;
+   - **New → Markdown Document** and **New file with MarkiiDown** on folder
+     and desktop backgrounds;
+   - MarkiiDown in the **Open with...** list, so it can become the `.md` default.
+
+The previous `.md`/`.markdown` association is saved and restored on uninstall.
+Running `--install` again updates the program, even if MarkiiDown is open in
+another window.
+
+To remove everything (program, `PATH` and registry):
+
 ```powershell
 markiidown --uninstall
 ```
 
----
+> [!NOTE]
+> On Windows 11, the right-click items are under **Show more options**
+> (or Shift+F10). The new Windows 11 menu only accepts packaged apps.
 
-## ⌨️ Controls & Shortcuts
+## Usage
 
-### 📖 In Viewer Mode (TUI Viewer):
+```powershell
+markiidown                         # opens the folder's README.md (or the first Markdown/text file)
+markiidown notes.md                # interactive reader
+markiidown script.py --edit        # editor
+markiidown --new                   # creates "novo.md" (or "novo (2).md"...) and opens the editor
+markiidown config.json --print     # prints formatted output and exits
+markiidown notes.md --watch        # refreshes on every save (Ctrl+C quits)
+markiidown guide.md -e guide.html  # exports to HTML
+markiidown app.ts --raw            # plain text, no formatting or line numbers
+markiidown read.md --numbers       # numbers the lines
+markiidown --help                  # all options (the interface is in Portuguese)
+```
+
+A file that does not exist is opened in the editor to be created (like Notepad).
+
+### Reader keys
 
 | Key | Action |
 | :--- | :--- |
-| **`e`** | **Open in Interactive Editor to modify the file** |
-| **`↓` / `j` / `Enter`** | Scroll 1 line down |
-| **`↑` / `k`** | Scroll 1 line up |
-| **`Space` / `PgDown`** | Scroll 1 page down |
-| **`PgUp` / `b`** | Scroll 1 page up |
-| **`Home` / `g`** | Jump to document start |
-| **`End` / `G`** | Jump to document end |
-| **`/`** | Search text in document (type query and press Enter) |
-| **`n` / `N`** | Next / Previous search match |
-| **`t`** | Open TOC or Code Symbols (`↑`/`↓` and `Enter`) |
-| **`?` / `h`** | Show keyboard shortcut help |
-| **`q` / `Esc`** | Exit viewer |
+| `↓` `j` `Enter` / `↑` `k` | Down / up one line |
+| `Space` `PgDn` `f` / `PgUp` `b` | Page down / up |
+| `Home` `g` / `End` `G` | Start / end |
+| `/` | Search (case-insensitive; Enter on an empty search clears the highlights) |
+| `n` / `N` | Next / previous match |
+| `t` | Table of contents: Markdown headings or code functions and classes |
+| `e` | Edit the file (returns to the reader already updated) |
+| `?` `h` | Help |
+| `q` `Esc` `Ctrl+C` | Quit |
 
-### ✏️ In Editor Mode (TUI Editor):
+### Editor keys
 
 | Key | Action |
 | :--- | :--- |
-| **`Ctrl+S`** | **Save changes to disk** |
-| **`Esc` / `Ctrl+Q`** | **Exit editor (prompts for confirmation if there are unsaved changes)** |
-| **`Ctrl+Z`** | Undo last change |
-| **`Ctrl+Y`** | Redo undone change |
-| **`Arrow Keys`** | Move cursor in document |
-| **`Home` / `End`** | Jump to start / end of current line |
-| **`PgUp` / `PgDown`** | Scroll screen up / down |
-| **`Tab`** | Insert 2-space indentation |
-| **`Enter`** | New line with smart auto-indentation |
-| **`Backspace` / `Delete`** | Delete characters / join lines |
+| `Ctrl+S` | Save |
+| `Esc` `Ctrl+Q` | Quit (asks if there are unsaved changes: **S** save, **D** discard, Esc keeps editing) |
+| `Ctrl+Z` / `Ctrl+Y` | Undo / redo (by word or action) |
+| `Tab` / `Shift+Tab` | Indent / unindent (uses the file's indentation) |
+| `Enter` | New line keeping the indentation |
+| `Ctrl+←` `Ctrl+→` | Jump a word |
+| `Home` / `End` | Start of the line's text, then column 1 / end of line |
+| `Ctrl+Home` / `Ctrl+End` | Start / end of the file |
+| `PgUp` / `PgDn` | Page up / down |
+| `Alt+Backspace` / `Ctrl+Delete` | Delete previous / next word |
+| Paste (`Ctrl+V` or right-click) | Inserts the text exactly as copied |
 
----
+## Good to know
 
-## 🚀 CLI Usage Examples
+- **Encoding**: UTF-8, UTF-8 with BOM, UTF-16 (with BOM) and ANSI/Windows-1252
+  (Notepad's “ANSI”) are detected, and the file is saved in the same encoding.
+  If you type a character ANSI cannot store (an emoji, say), the file is saved
+  as UTF-8 and the editor tells you.
+- **Line endings**: the editor keeps the file's own (CRLF, LF or CR). Mixed
+  files get a warning and are saved with the predominant one.
+- **Safe saving**: new content goes to a temporary file in the same folder and
+  replaces the original in one step, keeping attributes and permissions. If
+  another program changed the file since it was opened, the editor asks
+  before overwriting.
+- **Redirected output**: `markiidown x.md -p > out.txt` writes plain text
+  without colors. `NO_COLOR=1` turns colors off; `FORCE_COLOR=1` forces them.
+- **Links**: in Windows Terminal, `http(s)` and `mailto` links are clickable
+  (Ctrl+click). Elsewhere the address is shown in parentheses.
+  `FORCE_HYPERLINK=0` or `1` overrides the detection.
+- **Safety**: control codes from the file never reach the terminal (a file
+  cannot change the title or colors or clear the screen). When exporting, HTML
+  written inside Markdown is shown as text and never executed, and
+  `javascript:`/`data:` links are removed.
+- **Binary files** (images, executables, zip...) are not opened as text.
 
-```bash
-# 1. Open in interactive viewer (Default)
-markiidown document.md
-markiidown app.ts
-markiidown config.json
+## Known limitations
 
-# 2. Open directly in terminal editor
-markiidown main.py --edit
-markiidown script.ts -E
+- The context menu lives under “Show more options” on Windows 11 (see above).
+- In the terminal, images show as `[imagem: description] (address)`; Mermaid
+  diagrams and formulas show as code.
+- HTML inside Markdown shows as text (dimmed in the terminal).
+- The `.exe` is ~110 MB because it embeds the Bun runtime.
+- “ANSI” detection assumes Windows-1252 (Western European languages). Files in
+  other code pages (e.g. Cyrillic 1251) show wrong characters.
 
-# 2b. Always create a new uniquely-named file and open it in the editor
-markiidown --new
-markiidown MyFolder --new
+## Troubleshooting
 
-# 3. Print entire formatted and highlighted content to stdout
-markiidown notes.md --print
-markiidown server.go -p
+| Problem | Solution |
+| :--- | :--- |
+| `markiidown` is not recognized after `--install` | Open a new terminal (the `PATH` applies to windows opened after installing). |
+| The items are missing from the right-click menu | On Windows 11 use **Show more options**. Run `markiidown --register` to register again. |
+| Wrong accented characters in an old file | The file is probably neither UTF-8 nor Windows-1252. Convert it to UTF-8 in Notepad (Save as → Encoding). |
+| The screen looks odd after a forced close | Run `cls` (or close and reopen the tab). |
 
-# 4. Watch file changes in real-time
-markiidown notes.md --watch
+## Development
 
-# 5. Export to static self-contained HTML file
-markiidown guide.md --export manual.html
-markiidown index.ts -e index.html
+Requirements: [Bun](https://bun.sh) 1.4.4 or newer, on Windows (the project
+also runs on Linux/macOS, but the Explorer integration is Windows-only).
 
-# 6. Install / Uninstall on Windows
-markiidown --install
-markiidown --uninstall
-
-# 7. Display help and version
-markiidown --help
-markiidown --version
+```powershell
+bun install            # dependencies
+bun run start x.md     # run from source
+bun run check          # type checking + all tests
+bun test               # tests only
+bun test tests/e2e.test.ts                     # end-to-end tests only
+bun run build          # builds dist\markiidown.exe (with icon and version)
+bun run src/index.ts --install                 # builds and installs
 ```
 
----
+To run the end-to-end tests against the compiled executable:
 
-## 🔨 Compiling the Windows `.exe`
-
-To build the standalone Windows binary:
-
-```bash
-bun run build:exe
+```powershell
+$env:MARKIIDOWN_E2E_EXE = (Resolve-Path dist\markiidown.exe).Path
+bun test tests/e2e.test.ts
 ```
 
-The output file will be generated in `dist/markiidown.exe`.
+The end-to-end tests start MarkiiDown inside a real pseudo-terminal (ConPTY,
+the same engine as Windows Terminal), send keystrokes and check the
+reconstructed screen, colors and styles included.
 
-## ✅ Project Verification & Tests
+The architecture, the rules the code follows and the pitfalls found along the
+way are in [`llms.md`](llms.md) (in Portuguese). Dependencies and licenses are
+in [`DEPENDENCIAS.md`](DEPENDENCIAS.md). The source tree is described in the
+[Portuguese README](README.md#estrutura).
 
-```bash
-# TypeScript verification + full test suite
-bun run check
+## License
 
-# Individual commands
-bun run typecheck
-bun test
-```
-
----
-
-## 📂 Project Structure
-
-```text
-markiidown/
-├── assets/                   # Official multi-resolution icon (.ico)
-│   └── icon.ico
-├── dist/                     # Compiled portable executable (.exe)
-│   └── markiidown.exe
-├── exemplos/                 # Code sample files for syntax highlight testing
-│   ├── app.ts
-│   ├── script.py
-│   ├── server.go
-│   ├── main.rs
-│   ├── programa.cpp
-│   ├── query.sql
-│   ├── config.yaml
-│   └── Dockerfile
-├── src/
-│   ├── index.ts              # CLI entry point and action dispatch
-│   ├── cli.ts                # Validated option, action, and mode parser
-│   ├── editor.ts             # Full-screen interactive TUI Editor (Undo, Redo, Save Ctrl+S)
-│   ├── interactive.ts        # TUI Pager viewer (Alternate screen, scroll, search, TOC/Symbols)
-│   ├── terminal.ts           # Terminal formatter (Markdown & code syntax highlighting)
-│   ├── installer.ts          # Non-admin installer in %LOCALAPPDATA% & PATH manager
-│   ├── windows-registry.ts   # Windows Registry integration (HKCU, ShellNew, context menus)
-│   ├── html-template.ts      # Markdown/Code to static self-contained HTML converter
-│   ├── marked-terminal.d.ts  # Local marked-terminal type declaration
-│   └── utils.ts              # File type detection, path resolution, and metrics
-├── tests/                    # 40 unit and regression tests (bun test)
-├── scripts/
-│   ├── build-exe.ts          # Standalone compiler with PE metadata & embedded icon
-│   └── generate-icon.ts      # Multi-resolution icon generator (16x16 up to 256x256)
-├── exemplo.md                # Demonstration Markdown file
-├── package.json              # Project configuration, dependencies, and Bun scripts
-├── tsconfig.json             # TypeScript configuration
-├── LICENSE                   # GNU General Public License v3.0 (GPL-3.0)
-├── DEPENDENCIAS.md           # Dependency justifications and license compatibility
-├── llms.md                   # Architecture and technical documentation for LLMs/Agents
-├── README.md                 # Documentation in Portuguese (Main)
-├── README.en.md              # Documentation in English
-└── README.es.md              # Documentation in Spanish
-```
-
----
-
-## 📜 License
-
-Distributed under the **GNU General Public License v3.0 (GPL-3.0-or-later)**. See [LICENSE](./LICENSE) for details.
+[GPL-3.0-or-later](LICENSE).

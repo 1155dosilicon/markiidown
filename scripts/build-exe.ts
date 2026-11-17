@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import { resolve, join } from "node:path";
-import pc from "picocolors";
+import { pc } from "../src/colors.ts";
 import { formatBytes } from "../src/utils.ts";
 import { toWindowsFileVersion } from "../src/version.ts";
 
@@ -28,7 +28,8 @@ async function buildExecutable(): Promise<void> {
   const iconPath = join(rootDir, "assets", "icon.ico");
 
   const buildArgs = [
-    "bun",
+    // O próprio Bun que está rodando este script (não depende do PATH)
+    process.execPath,
     "build",
     "--compile",
     "--minify",
@@ -51,6 +52,7 @@ async function buildExecutable(): Promise<void> {
   // Executa o comando de compilação do Bun
   const proc = Bun.spawn(buildArgs, {
     cwd: rootDir,
+    env: { ...process.env, DO_NOT_TRACK: "1" },
     stdout: "inherit",
     stderr: "inherit",
   });

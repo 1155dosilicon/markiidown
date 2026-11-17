@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -7,7 +7,9 @@ import {
   buildCleanupScript,
   isRunningFromBunRuntime,
   normalizePathForComparison,
+  removeOldExecutables,
   removePathEntry,
+  swapExecutable,
 } from "../src/installer.ts";
 import { toWindowsFileVersion, VERSION } from "../src/version.ts";
 
@@ -90,6 +92,47 @@ describe("desinstalação", () => {
       expect(removed).toBe(true);
     },
     20_000
+  );
+});
+
+describe("troca do executável instalado", () => {
+  test("troca direto quando o antigo não está em uso", () => {
+    const directory = mkdtempSync(join(tmpdir(), "markiidown-swap-"));
+    try {
+      writeFileSync(join(directory, "markiidown.exe"), "antigo");
+      writeFileSync(join(directory, "markiidown.new.exe"), "novo");
+      swapExecutable(join(directory, "markiidown.new.exe"), join(directory, "markiidown.exe"));
+      expect(readFileSync(join(directory, "markiidown.exe"), "utf8")).toBe("novo");
+      expect(existsSync(join(directory, "markiidown.new.exe"))).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  // Regressão: com outra janela do MarkiiDown aberta, o --install falhava (EBUSY)
+  test.skipIf(process.platform !== "win32")(
+    "funciona com o executável antigo em uso (renomeia em vez de sobrescrever)",
+    async () => {
+      const directory = mkdtempSync(join(tmpdir(), "markiidown-swap-"));
+      const target = join(directory, "markiidown.exe");
+      copyFileSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "PING.EXE"), target);
+      const running = Bun.spawn([target, "-n", "30", "127.0.0.1"], { stdout: "ignore", stderr: "ignore" });
+      try {
+        await Bun.sleep(300);
+        writeFileSync(join(directory, "markiidown.new.exe"), "novo");
+        swapExecutable(join(directory, "markiidown.new.exe"), target);
+        expect(readFileSync(target, "utf8")).toBe("novo");
+        expect(readdirSync(directory).some((name) => /^markiidown\.old-\d+\.exe$/.test(name))).toBe(true);
+      } finally {
+        running.kill();
+        await running.exited;
+        await Bun.sleep(200);
+        removeOldExecutables(directory);
+        expect(readdirSync(directory).some((name) => name.includes(".old-"))).toBe(false);
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+    15_000
   );
 });
 

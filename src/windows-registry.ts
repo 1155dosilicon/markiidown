@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import pc from "picocolors";
+import { pc } from "./colors.ts";
 
 export const MARKIIDOWN_DOCUMENT_CLASS = "MarkiiDown.Document";
 export const MARKIIDOWN_SOFTWARE_KEY = "HKCU\\Software\\MarkiiDown";
@@ -9,15 +9,28 @@ const LEGACY_APP_KEY_NAME = "markiidown.exe";
 const MANAGED_EXTENSIONS = [".md", ".markdown"];
 
 /**
- * Notifica o Windows Explorer para recarregar associações e ícones imediatamente
+ * Avisa o Windows Explorer que as associações de arquivo mudaram, para ele
+ * atualizar ícones e menus na hora: `SHChangeNotify(SHCNE_ASSOCCHANGED)`,
+ * a forma documentada pela Microsoft, e `ie4uinit -show`, que recarrega o
+ * cache de ícones.
  */
 export async function notifyWindowsShell(): Promise<void> {
   try {
-    const proc = Bun.spawn(["ie4uinit.exe", "-show"], {
-      stdout: "ignore",
-      stderr: "ignore",
+    const { dlopen, FFIType } = await import("bun:ffi");
+    const shell32 = dlopen("shell32.dll", {
+      SHChangeNotify: { args: [FFIType.i32, FFIType.u32, FFIType.ptr, FFIType.ptr], returns: FFIType.void },
     });
-    // Não bloqueia caso o ie4uinit demore para responder no Windows
+    try {
+      const SHCNE_ASSOCCHANGED = 0x08000000;
+      const SHCNF_IDLIST = 0;
+      shell32.symbols.SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, null, null);
+    } finally {
+      shell32.close();
+    }
+  } catch {}
+  try {
+    const proc = Bun.spawn(["ie4uinit.exe", "-show"], { stdout: "ignore", stderr: "ignore" });
+    // Não bloqueia caso o ie4uinit demore para responder
     proc.unref();
   } catch {}
 }
@@ -264,16 +277,10 @@ async function restoreExtensionAssociation(extension: string): Promise<boolean> 
     const result = await runReg(["reg", "add", classesKey, "/ve", "/d", backup, "/f"]);
     return result.exitCode === 0;
   }
+  // Sem backup, a associação foi criada pela instalação: só apaga o valor.
+  // A chave em si é apagada no fim do unregister, se ficar vazia.
   const result = await runReg(["reg", "delete", classesKey, "/ve", "/f"]);
-  if (result.exitCode !== 0) return false;
-
-  // Sem backup, a chave da extensão foi criada pela instalação: se ficou
-  // vazia (sem valores nem subchaves), é apagada para não deixar resto
-  const remaining = await runReg(["reg", "query", classesKey]);
-  if (remaining.exitCode === 0 && isRegKeyEmpty(remaining.stdout)) {
-    await runReg(["reg", "delete", classesKey, "/f"]);
-  }
-  return true;
+  return result.exitCode === 0;
 }
 
 /**
@@ -286,27 +293,40 @@ export function isRegKeyEmpty(output: string): boolean {
 }
 
 /**
- * Varre Applications\ por chaves cujo comando de abertura aponta para o
- * MarkiiDown. Cobre instalações feitas com o executável renomeado,
- * que não estão sob o nome de chave legado.
+ * Da saída de `reg query <Applications> /s /f markiidown /d`, extrai as
+ * chaves de aplicativo cujo comando de abertura menciona o MarkiiDown.
+ * Função pura (testável no Linux).
+ */
+export function parseApplicationKeysFromSearch(output: string): string[] {
+  const found = new Set<string>();
+  for (const line of output.split(/\r?\n/)) {
+    const match = /^(HKEY_[^\r\n]*\\Applications\\[^\\\r\n]+)\\shell\\open\\command$/i.exec(line.trim());
+    if (match) found.add(match[1]);
+  }
+  return [...found];
+}
+
+/**
+ * Procura em Applications\ chaves cujo comando de abertura aponta para o
+ * MarkiiDown. Cobre instalações feitas com o executável renomeado, que não
+ * estão sob o nome de chave padrão. Uma única consulta (`/s /f`), em vez de
+ * um `reg query` por aplicativo registrado.
  */
 async function findMarkiiDownApplicationKeys(): Promise<string[]> {
-  const found: string[] = [];
   try {
-    const list = await runReg(["reg", "query", "HKCU\\Software\\Classes\\Applications"]);
-    if (list.exitCode !== 0) return found;
-    for (const subkey of parseRegSubkeys(list.stdout)) {
-      try {
-        const cmd = await runReg(["reg", "query", `${subkey}\\shell\\open\\command`]);
-        if (cmd.exitCode !== 0) continue;
-        const command = parseRegDefaultValue(cmd.stdout);
-        if (command && command.toLowerCase().includes("markiidown")) {
-          found.push(subkey);
-        }
-      } catch {}
-    }
-  } catch {}
-  return found;
+    const search = await runReg(["reg", "query", "HKCU\\Software\\Classes\\Applications", "/s", "/f", "markiidown", "/d"]);
+    return search.exitCode === 0 ? parseApplicationKeysFromSearch(search.stdout) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Apaga a chave da extensão se ela ficou vazia (sem valores nem subchaves). */
+async function deleteKeyIfEmpty(key: string): Promise<void> {
+  const remaining = await runReg(["reg", "query", key]);
+  if (remaining.exitCode === 0 && isRegKeyEmpty(remaining.stdout)) {
+    await runReg(["reg", "delete", key, "/f"]);
+  }
 }
 
 /**
@@ -332,14 +352,11 @@ export async function registerWindowsContextMenu(customExePath?: string): Promis
     return false;
   }
 
-  const exeDir = dirname(exePath);
-  const dedicatedIco = join(exeDir, "markiidown.ico");
-  const assetIco = resolve(import.meta.dir, "..", "assets", "icon.ico");
-  const iconTarget = existsSync(dedicatedIco)
-    ? dedicatedIco
-    : existsSync(assetIco)
-    ? assetIco
-    : `${exePath},0`;
+  // Ícone: o .ico ao lado do executável (instalação pelo código-fonte) ou o
+  // embutido no próprio .exe. Nunca um arquivo da pasta do projeto: ela pode
+  // ser apagada e os menus ficariam sem ícone.
+  const dedicatedIco = join(dirname(exePath), "markiidown.ico");
+  const iconTarget = existsSync(dedicatedIco) ? dedicatedIco : `${exePath},0`;
   const iconValue = formatIconValue(iconTarget);
   const appKeyName = basename(exePath);
 
@@ -428,6 +445,11 @@ export async function unregisterWindowsContextMenu(): Promise<boolean> {
 
     const proc = Bun.spawn(["reg", "delete", key, "/f"], { stdout: "ignore", stderr: "ignore" });
     if ((await proc.exited) !== 0) success = false;
+  }
+
+  // 3. Chaves .md/.markdown que ficaram vazias (criadas pela instalação) somem
+  for (const extension of MANAGED_EXTENSIONS) {
+    await deleteKeyIfEmpty(`HKCU\\Software\\Classes\\${extension}`);
   }
 
   // Notifica o Windows Explorer para atualizar ícones imediatamente

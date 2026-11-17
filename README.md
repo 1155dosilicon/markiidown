@@ -1,217 +1,206 @@
-# 🚀 MarkiiDown
+# MarkiiDown
 
 <p align="center">
   <b>🇧🇷 Português</b> | <a href="./README.en.md">🇺🇸 English</a> | <a href="./README.es.md">🇪🇸 Español</a>
 </p>
 
-<p align="center">
-  <b>Visualizador e Editor Universal de Arquivos e Markdown 100% Standalone, leve e offline, desenvolvido em TypeScript com Bun.</b>
-</p>
+Leitor e editor de **Markdown**, **código** e **texto** para o terminal do
+Windows. Um único `markiidown.exe`, sem instalar nada além dele, 100% offline
+(não abre portas nem acessa a rede).
 
----
+- **Leitor**: Markdown formatado (títulos, listas, tabelas, citações, alertas
+  do GitHub, links, emoji), código com realce de sintaxe em dezenas de
+  linguagens, busca, sumário e rolagem.
+- **Editor** no próprio terminal: desfazer/refazer, colar sem bagunçar a
+  indentação, salvamento seguro que mantém a codificação do arquivo.
+- **Exportação** para um arquivo HTML autocontido (tema claro/escuro, sumário,
+  pronto para imprimir ou salvar como PDF).
+- **Integração com o Explorer**, sem administrador: “Abrir com MarkiiDown”,
+  “Novo → Documento Markdown”, “Novo arquivo com MarkiiDown”.
 
-**MarkiiDown** é um leitor e editor universal de arquivos de alta performance projetado para rodar diretamente no terminal de forma interativa (TUI Pager & Editor) ou via linha de comando. Ele opera de forma **100% offline**, sem criar servidores web locais, sem abrir portas de rede e sem depender de editores pesados ou navegadores externos.
+O que mudou em cada versão está em [CHANGELOG.md](CHANGELOG.md).
 
-Ele suporta **Markdown formatado**, **código-fonte** (TypeScript, JavaScript, Python, Rust, Go, C/C++, HTML, CSS, SQL, Shell e dezenas de outros) com realce de sintaxe em tempo real, **arquivos de configuração** (JSON, YAML, TOML, XML, ENV, Dockerfile), **texto plano** e **prevenção segura contra arquivos binários**.
+## Instalação (Windows)
 
-Inclui suporte completo a **edição interativa no terminal com salvamento no disco (`Ctrl+S`)**, **instalação em espaço de usuário (`%LOCALAPPDATA%`) sem privilégios de administrador**, integração ao **menu de contexto do Windows ("Abrir com MarkiiDown")** e compilação para executável portátil **`.exe` independente**.
-
----
-
-## ✨ Recursos Principais
-
-- 📄 **Leitor & Editor Universal**: Abre e edita Markdown, código-fonte em mais de 30 linguagens, JSON/YAML/TOML, logs e texto plano.
-- ✏️ **Editor TUI Integrado (`-E` / `--edit` ou tecla `e`)**: Edição de texto em tela cheia direto no terminal com salvamento em disco (`Ctrl+S`), Undo/Redo (`Ctrl+Z`/`Ctrl+Y`), indentação por Tab, numeração de linhas e suporte a cursor live.
-- 🎨 **Realce de Sintaxe Automático**: Syntax highlighting completo para código-fonte e blocos Markdown.
-- 🔒 **100% Standalone & Offline**: Zero servidores HTTP, zero portas abertas e zero tráfego de rede.
-- 🪟 **Instalador sem Administrador (`--install`)**: Instala em `%LOCALAPPDATA%\MarkiiDown`, adiciona automaticamente ao `PATH` do usuário e configura o menu de contexto do Windows.
-- 🖱️ **Integração com o Windows Explorer**: Opção *"Abrir com MarkiiDown"* no menu de clique direito para qualquer arquivo e suporte à associação no *"Abrir com..."*.
-- 📖 **Visualizador Interativo no Terminal (TUI Pager)**: Navegação suave, quebra responsiva de linhas longas sem perder conteúdo, rolagem, barra de progresso e busca em tempo real (`/`).
-- 📑 **Sumário Integrado (TOC & Símbolos)**: Pressione `t` para listar e pular instantaneamente para cabeçalhos Markdown ou funções/classes/símbolos em arquivos de código.
-- 💻 **Modo Impressão Direta (`--print` / `-p`)**: Exibe o arquivo formatado e colorido diretamente na saída padrão (stdout), ideal para scripts e pipes.
-- 🔄 **Modo Monitoramento Contínuo (`--watch` / `-w`)**: Observa alterações e substituições atômicas do arquivo em tempo real e atualiza a tela.
-- 📤 **Exportação Estática para HTML (`--export` / `-e`)**: Gera um `.html` com CSS, numeração de linhas, tema escuro/claro e realce de sintaxe embutidos, sem CDN.
-- 🛡️ **Proteção contra Binários**: Detecta e impede que arquivos binários corrompam o terminal.
-- 📦 **Executável Windows Standalone (`.exe`)**: Compilado via Bun, embute o runtime e todas as dependências em um único arquivo binário portátil.
-
----
-
-## 📥 Requisitos
-
-- [Bun](https://bun.sh) (v1.3+) para desenvolvimento, testes e compilação.
-- *Nota:* O executável compilado (`markiidown.exe`) é totalmente autônomo e roda no Windows x64 **sem precisar de Bun, Node ou qualquer software instalado**.
-
----
-
-## ⚡ Instalação Rápida no Windows (Sem Administrador)
-
-Baixe o `markiidown.exe` na [última versão](https://github.com/1155dosilicon/markiidown/releases/latest) e, na pasta onde ele está, execute:
+Baixe o `markiidown.exe` da [última versão](https://github.com/1155dosilicon/markiidown/releases/latest)
+e, na pasta onde ele está:
 
 ```powershell
-# Instala em %LOCALAPPDATA%\MarkiiDown, adiciona ao PATH e ao menu de contexto
 .\markiidown.exe --install
-
-# Ou via código-fonte; este comando compila o standalone antes de instalá-lo:
-bun run src/index.ts --install
 ```
 
-Após a instalação:
-1. O comando `markiidown` fica disponível em novas janelas do Prompt ou PowerShell (reabra o terminal após instalar).
-2. Clicar com o **botão direito** no espaço vazio de qualquer pasta ou área de trabalho exibe:
-   - **"Novo" -> "Documento Markdown"** (cria um arquivo `.md` imediatamente, igual ao Bloco de Notas).
-   - **"Novo arquivo com MarkiiDown"** (cria `novo.md`, `novo (2).md`... naquela pasta e abre o editor).
-3. Clicar com o **botão direito** em qualquer arquivo no Explorer exibe **"Abrir com MarkiiDown"**.
-4. Clicar com o **botão direito sobre o ícone de uma pasta** exibe **"Novo arquivo com MarkiiDown"** (cria o arquivo dentro daquela pasta).
-5. Você pode associar o MarkiiDown como aplicativo padrão no *"Abrir com..."*.
+Isso:
 
-Para desinstalar e remover todas as entradas do sistema:
+1. copia o programa para `%LOCALAPPDATA%\MarkiiDown\markiidown.exe`;
+2. adiciona essa pasta ao `PATH` do seu usuário (abra um terminal novo depois);
+3. registra no Explorer (só no seu usuário, em `HKCU\Software\Classes`):
+   - **Abrir com MarkiiDown** no botão direito de qualquer arquivo;
+   - **Novo → Documento Markdown** e **Novo arquivo com MarkiiDown** no fundo
+     das pastas e da área de trabalho;
+   - o MarkiiDown na lista **Abrir com...**, para virar o padrão do `.md`.
+
+A associação anterior de `.md`/`.markdown` é guardada e volta na desinstalação.
+Pode rodar o `--install` de novo para atualizar, mesmo com o MarkiiDown aberto
+em outra janela.
+
+Para remover tudo (programa, `PATH` e Registro):
+
 ```powershell
 markiidown --uninstall
 ```
 
----
+> [!NOTE]
+> No Windows 11, os itens do botão direito ficam em **Mostrar mais opções**
+> (ou Shift+F10). O menu novo do Windows 11 só aceita programas empacotados.
 
-## ⌨️ Controles e Atalhos
+## Uso
 
-### 📖 No Modo Leitor (TUI Viewer):
+```powershell
+markiidown                         # abre o README.md da pasta (ou o 1º Markdown/texto)
+markiidown notas.md                # leitor interativo
+markiidown script.py --edit        # editor
+markiidown --new                   # cria "novo.md" (ou "novo (2).md"...) e abre o editor
+markiidown config.json --print     # imprime formatado e sai
+markiidown notas.md --watch        # atualiza a tela a cada salvamento (Ctrl+C sai)
+markiidown guia.md -e guia.html    # exporta para HTML
+markiidown app.ts --raw            # texto puro, sem formatação nem numeração
+markiidown leia.md --numbers       # numera as linhas
+markiidown --help                  # todas as opções
+```
+
+Um arquivo que não existe é aberto no editor para ser criado (como no Bloco de Notas).
+
+### Teclas do leitor
 
 | Tecla | Ação |
 | :--- | :--- |
-| **`e`** | **Abrir no Editor Interativo para alterar o arquivo** |
-| **`↓` / `j` / `Enter`** | Rolar 1 linha para baixo |
-| **`↑` / `k`** | Rolar 1 linha para cima |
-| **`Espaço` / `PgDown`** | Rolar 1 página para baixo |
-| **`PgUp` / `b`** | Rolar 1 página para cima |
-| **`Home` / `g`** | Ir para o topo do documento |
-| **`End` / `G`** | Ir para o final do documento |
-| **`/`** | Iniciar busca no documento (digite o termo e pressione Enter) |
-| **`n` / `N`** | Próxima / Anterior ocorrência da busca |
-| **`t`** | Abrir Sumário ou Símbolos de Código (`↑`/`↓` e `Enter`) |
-| **`?` / `h`** | Exibir painel de ajuda |
-| **`q` / `Esc`** | Sair do visualizador |
+| `↓` `j` `Enter` / `↑` `k` | Descer / subir uma linha |
+| `Espaço` `PgDn` `f` / `PgUp` `b` | Página para baixo / para cima |
+| `Home` `g` / `End` `G` | Início / fim |
+| `/` | Buscar (sem diferenciar maiúsculas; Enter com a busca vazia limpa os destaques) |
+| `n` / `N` | Próxima / anterior ocorrência |
+| `t` | Sumário: títulos do Markdown ou funções e classes do código |
+| `e` | Editar o arquivo (volta ao leitor já atualizado) |
+| `?` `h` | Ajuda |
+| `q` `Esc` `Ctrl+C` | Sair |
 
-### ✏️ No Modo Editor (TUI Editor):
+### Teclas do editor
 
 | Tecla | Ação |
 | :--- | :--- |
-| **`Ctrl+S`** | **Salvar alterações no disco** |
-| **`Esc` / `Ctrl+Q`** | **Sair do editor (pede confirmação se houver alterações)** |
-| **`Ctrl+Z`** | Desfazer última alteração (Undo) |
-| **`Ctrl+Y`** | Refazer alteração desfeita (Redo) |
-| **`Setas direcionais`** | Mover cursor no documento |
-| **`Home` / `End`** | Ir para o início / final da linha atual |
-| **`PgUp` / `PgDown`** | Rolar tela para cima / baixo |
-| **`Tab`** | Inserir indentação (2 espaços) |
-| **`Enter`** | Nova linha com auto-indentação inteligente |
-| **`Backspace` / `Delete`** | Apagar caracteres / unir linhas |
+| `Ctrl+S` | Salvar |
+| `Esc` `Ctrl+Q` | Sair (pergunta se há alterações: **S**alvar, **D**escartar ou Esc para continuar) |
+| `Ctrl+Z` / `Ctrl+Y` | Desfazer / refazer (por palavra ou ação) |
+| `Tab` / `Shift+Tab` | Indentar / desindentar (usa a indentação do arquivo) |
+| `Enter` | Nova linha mantendo a indentação |
+| `Ctrl+←` `Ctrl+→` | Pular palavra |
+| `Home` / `End` | Início do texto da linha, depois coluna 1 / fim da linha |
+| `Ctrl+Home` / `Ctrl+End` | Início / fim do arquivo |
+| `PgUp` / `PgDn` | Página acima / abaixo |
+| `Alt+Backspace` / `Ctrl+Delete` | Apagar palavra anterior / seguinte |
+| Colar (`Ctrl+V` ou botão direito) | Insere o texto exatamente como copiado |
 
----
+## Detalhes que valem saber
 
-## 🚀 Modos de Uso da Linha de Comando
+- **Codificação**: UTF-8, UTF-8 com BOM, UTF-16 (com BOM) e ANSI/Windows-1252
+  (o “ANSI” do Bloco de Notas) são detectados e o arquivo é salvo na mesma
+  codificação. Se você digitar um caractere que não existe no ANSI (um emoji,
+  por exemplo), o arquivo é salvo em UTF-8 e o editor avisa.
+- **Finais de linha**: o editor mantém o do arquivo (CRLF, LF ou CR). Se o
+  arquivo misturar tipos, avisa e salva com o predominante.
+- **Salvamento seguro**: o conteúdo novo vai para um arquivo temporário na
+  mesma pasta e substitui o original de uma vez, mantendo atributos e
+  permissões. Se o arquivo foi alterado por outro programa desde que foi
+  aberto, o editor pergunta antes de sobrescrever.
+- **Saída redirecionada**: `markiidown x.md -p > saida.txt` grava só o texto,
+  sem cores. `NO_COLOR=1` desliga as cores; `FORCE_COLOR=1` força.
+- **Links**: no Windows Terminal, links `http(s)` e `mailto` são clicáveis
+  (Ctrl+clique). Em outros terminais o endereço aparece entre parênteses.
+  `FORCE_HYPERLINK=0` ou `1` decide manualmente.
+- **Segurança**: códigos de controle do arquivo nunca chegam ao terminal (um
+  arquivo não consegue mudar título, cores ou apagar a tela). Na exportação,
+  HTML escrito dentro do Markdown aparece como texto, nunca é executado, e
+  links `javascript:`/`data:` são removidos.
+- **Binários** (imagens, executáveis, zip...) não são abertos como texto.
 
-```bash
-# 1. Abrir no leitor interativo (Padrão)
-markiidown documento.md
-markiidown app.ts
-markiidown config.json
+## Limitações conhecidas
 
-# 2. Abrir diretamente no editor de terminal
-markiidown main.py --edit
-markiidown script.ts -E
+- O menu de contexto fica em “Mostrar mais opções” no Windows 11 (veja acima).
+- No terminal, imagens aparecem como `[imagem: descrição] (endereço)`; diagramas
+  Mermaid e fórmulas aparecem como código.
+- HTML dentro do Markdown aparece como texto (no terminal, esmaecido).
+- O `.exe` tem ~110 MB porque embute o runtime do Bun.
+- A detecção de “ANSI” assume Windows-1252 (português e demais línguas da
+  Europa Ocidental). Arquivos em outras páginas de código (ex.: cirílico em
+  1251) aparecem com caracteres trocados.
 
-# 2b. Criar sempre um arquivo novo com nome único e abrir no editor
-markiidown --new
-markiidown MinhaPasta --new
+## Solução de problemas
 
-# 3. Imprimir todo o conteúdo formatado e colorido direto na tela
-markiidown notas.md --print
-markiidown server.go -p
+| Problema | Solução |
+| :--- | :--- |
+| `markiidown` não é reconhecido depois do `--install` | Abra um terminal novo (o `PATH` vale para janelas abertas depois da instalação). |
+| Os itens não aparecem no botão direito | No Windows 11, use **Mostrar mais opções**. Rode `markiidown --register` para registrar de novo. |
+| Acentos trocados num arquivo antigo | O arquivo provavelmente não é UTF-8 nem Windows-1252. Converta para UTF-8 no Bloco de Notas (Salvar como → Codificação). |
+| A tela fica estranha depois de fechar à força | Rode `cls` (ou feche e abra a aba). |
 
-# 4. Monitorar alterações no arquivo em tempo real
-markiidown notas.md --watch
+## Desenvolvimento
 
-# 5. Exportar para arquivo HTML estático autocontido
-markiidown guia.md --export manual.html
-markiidown index.ts -e index.html
+Requisitos: [Bun](https://bun.sh) 1.4.4 ou mais novo, no Windows (o projeto
+também roda no Linux/macOS, mas a integração com o Explorer é só Windows).
 
-# 6. Instalar / Desinstalar no Windows
-markiidown --install
-markiidown --uninstall
-
-# 7. Exibir ajuda e versão
-markiidown --help
-markiidown --version
+```powershell
+bun install            # dependências
+bun run start x.md     # roda pelo código-fonte
+bun run check          # verificação de tipos + todos os testes
+bun test               # só os testes
+bun test tests/e2e.test.ts                     # só os de ponta a ponta
+bun run build          # gera dist\markiidown.exe (com ícone e versão)
+bun run src/index.ts --install                 # compila e instala
 ```
 
----
+Para rodar os testes de ponta a ponta contra o executável compilado:
 
-## 🔨 Compilando o Executável `.exe`
-
-Para gerar o binário standalone:
-
-```bash
-bun run build:exe
+```powershell
+$env:MARKIIDOWN_E2E_EXE = (Resolve-Path dist\markiidown.exe).Path
+bun test tests/e2e.test.ts
 ```
 
-O arquivo executável standalone será gerado em `dist/markiidown.exe`.
+Os testes de ponta a ponta abrem o MarkiiDown num pseudoterminal de verdade
+(ConPTY, o mesmo motor do Windows Terminal), mandam teclas e conferem a tela
+reconstruída, incluindo cores e estilos.
 
-## ✅ Verificação e Testes do Projeto
+A arquitetura, as regras que o código segue e as armadilhas encontradas estão
+em [`llms.md`](llms.md). As dependências e licenças, em
+[`DEPENDENCIAS.md`](DEPENDENCIAS.md).
 
-```bash
-# Verificação TypeScript + suíte completa de testes
-bun run check
-
-# Comandos individuais
-bun run typecheck
-bun test
-```
-
-## 📂 Estrutura do Projeto
+### Estrutura
 
 ```text
-markiidown/
-├── assets/                   # Ícone oficial multi-resolução (.ico)
-│   └── icon.ico
-├── dist/                     # Executável portátil compilado (.exe)
-│   └── markiidown.exe
-├── exemplos/                 # Arquivos de exemplo para teste de syntax highlight
-│   ├── app.ts
-│   ├── script.py
-│   ├── server.go
-│   ├── main.rs
-│   ├── programa.cpp
-│   ├── query.sql
-│   ├── config.yaml
-│   └── Dockerfile
-├── src/
-│   ├── index.ts              # Ponto de entrada e despacho de ações CLI
-│   ├── cli.ts                # Parser validado de opções, ações e modos
-│   ├── editor.ts             # Editor TUI interativo em tela cheia (Undo, Redo, Save Ctrl+S)
-│   ├── interactive.ts        # Visualizador TUI Pager (Alternate screen, scroll, busca, TOC/Símbolos)
-│   ├── terminal.ts           # Formatador de terminal (Markdown e código com syntax highlight)
-│   ├── installer.ts          # Instalador em %LOCALAPPDATA% e gestor de PATH em HKCU
-│   ├── windows-registry.ts   # Integração com Registro do Windows (HKCU, ShellNew, menus de contexto)
-│   ├── html-template.ts      # Conversor de Markdown/Código para HTML estático autocontido
-│   ├── marked-terminal.d.ts  # Tipagem local da extensão marked-terminal
-│   └── utils.ts              # Detecção de tipo de arquivo, resolução de caminhos e métricas
-├── tests/                    # 40 testes unitários e de regressão (bun test)
-├── scripts/
-│   ├── build-exe.ts          # Compilador com metadados PE e ícone embutido
-│   └── generate-icon.ts      # Gerador de ícone multi-resolução (16x16 até 256x256)
-├── exemplo.md                # Arquivo Markdown para testes gerais
-├── package.json              # Configuração do projeto, dependências e scripts Bun
-├── tsconfig.json             # Configuração TypeScript
-├── LICENSE                   # Licença GNU General Public License v3.0 (GPL-3.0)
-├── DEPENDENCIAS.md           # Justificativa de dependências e análise de licença
-├── llms.md                   # Documentação técnica e arquitetura para LLMs/Agentes
-├── README.md                 # Documentação em Português (Principal)
-├── README.en.md              # Documentação em Inglês
-└── README.es.md              # Documentação em Espanhol
+src/
+  index.ts             ponto de entrada: interpreta a CLI e escolhe o modo
+  cli.ts               análise e validação dos argumentos (sem efeitos colaterais)
+  terminal.ts          lê o arquivo e gera as linhas da tela; modos --print e --watch
+  markdown-terminal.ts renderizador de Markdown para o terminal
+  highlight.ts         realce de sintaxe (highlight.js → cores ANSI)
+  interactive.ts       leitor interativo (rolagem, busca, sumário, ajuda)
+  editor.ts            editor de texto
+  keys.ts              decodificador de teclado (Esc, setas, colagem...)
+  terminal-io.ts       acesso ao terminal (real ou falso, para testes)
+  ansi.ts              utilidades de texto com cores: quebra, corte, largura
+  colors.ts            decide se há cores (TTY, NO_COLOR, FORCE_COLOR)
+  text-file.ts         detecção e preservação da codificação
+  safe-write.ts        gravação segura (ReplaceFileW no Windows)
+  html-template.ts     exportação HTML
+  installer.ts         --install / --uninstall e PATH do usuário
+  windows-registry.ts  menu de contexto, "Novo", "Abrir com" e associação do .md
+  utils.ts             tipos de arquivo, escolha do arquivo da pasta, sumário de código
+  version.ts           versão (lida do package.json)
+tests/                 testes (bun test); tests/support/ tem o pseudoterminal e o emulador de tela
+scripts/               build-exe.ts (gera o .exe) e generate-icon.ts (gera assets/icon.ico)
+exemplos/              arquivos de código para testar o realce
+exemplo.md             documento de demonstração
 ```
 
----
+## Licença
 
-## 📜 Licença
-
-Distribuído sob a licença **GNU General Public License v3.0 (GPL-3.0-or-later)**. Consulte o arquivo [LICENSE](./LICENSE) para mais detalhes.
-
+[GPL-3.0-or-later](LICENSE).

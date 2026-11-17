@@ -1,517 +1,659 @@
-import readline from "node:readline";
-import pc from "picocolors";
-import { padToWidth, stripAnsi, truncateAnsi, wrapAnsi, expandTabsAnsi } from "./ansi.ts";
+import { highlightRanges, padToWidth, stripAnsi, truncateAnsi, visibleWidth, wrapAnsiDetailed } from "./ansi.ts";
+import { colorEnabled, pc } from "./colors.ts";
 import { runInteractiveEditor } from "./editor.ts";
-import { detectFileType, formatBytes } from "./utils.ts";
+import type { KeyEvent, InputEvent } from "./keys.ts";
+import { processTerminal, type TerminalIO } from "./terminal-io.ts";
+import { formatBytes } from "./utils.ts";
 
 // Mantidos como reexportação: testes e outros módulos importam daqui.
 export { expandTabsAnsi, stripAnsi, truncateAnsi, wrapAnsi } from "./ansi.ts";
 
+/** O que o leitor mostra. É recarregado ao redimensionar (Markdown) e depois de editar. */
+export interface ViewerContent {
+  renderedLines: string[];
+  /** Texto pesquisável de cada linha, sem cores nem numeração. */
+  searchLines?: string[];
+  /** A linha continua o parágrafo da anterior: a busca as junta (frases que caem na quebra). */
+  continued?: boolean[];
+  tableOfContents: { title: string; lineIndex: number; level?: number }[];
+  fileSize: number;
+  /** Colunas ocupadas pela numeração; as continuações de linha recuam isso. */
+  gutterWidth?: number;
+  /** Se verdadeiro, `load` é chamado de novo quando a largura muda. */
+  widthDependent?: boolean;
+  isBinary?: boolean;
+}
+
 export interface InteractiveOptions {
   fileName: string;
   filePath: string;
-  fileSize: number;
-  renderedLines: string[];
-  /** Texto pesquisável de cada linha, sem cores nem numeração (gutter). */
-  searchLines?: string[];
-  tableOfContents: { title: string; lineIndex: number }[];
-  onReload?: () => Promise<{
-    renderedLines: string[];
-    searchLines?: string[];
-    tableOfContents: { title: string; lineIndex: number }[];
-    fileSize: number;
-  }>;
+  /** Carrega o conteúdo formatado para a largura informada. */
+  load: (columns: number) => Promise<ViewerContent>;
+  terminal?: TerminalIO;
+  /** Abre o editor (injetável nos testes). */
+  openEditor?: (filePath: string, terminal: TerminalIO) => Promise<{ saved: boolean }>;
+}
+
+interface VisualLine {
+  text: string;
+  source: number;
+  /** Índice desta linha visual entre as linhas visuais da mesma linha lógica. */
+  segment: number;
+  /** Onde ela começa no texto visível da linha lógica. */
+  start: number;
+}
+
+interface SearchState {
+  query: string;
+  /** Ocorrências em ordem: linha onde começam e posição no texto pesquisável. */
+  matches: { line: number; start: number; end: number }[];
+  current: number;
+  /** Trechos a destacar em cada linha; uma ocorrência pode ocupar duas linhas. */
+  byLine: Map<number, { start: number; end: number; match: number }[]>;
+}
+
+const MATCH_STYLE = colorEnabled ? "\x1B[30;43m" : "\x1B[7m";
+const CURRENT_MATCH_STYLE = colorEnabled ? "\x1B[30;46m" : "\x1B[7;4m";
+
+/**
+ * Encontra todas as ocorrências de `needle` em `haystack` sem diferenciar
+ * maiúsculas de minúsculas. As posições são do texto original, mesmo quando
+ * a versão minúscula de um caractere tem outro tamanho (ex.: "İ").
+ */
+export function findAllCaseInsensitive(haystack: string, needle: string): { start: number; end: number }[] {
+  if (!needle) return [];
+  const loweredNeedle = needle.toLowerCase();
+  let lowered = "";
+  const originalIndex: number[] = [];
+  for (let index = 0; index < haystack.length; ) {
+    const codePoint = haystack.codePointAt(index)!;
+    const char = String.fromCodePoint(codePoint);
+    const lower = char.toLowerCase();
+    for (let k = 0; k < lower.length; k++) originalIndex.push(index);
+    lowered += lower;
+    index += char.length;
+  }
+  originalIndex.push(haystack.length);
+
+  const result: { start: number; end: number }[] = [];
+  let from = 0;
+  while (true) {
+    const found = lowered.indexOf(loweredNeedle, from);
+    if (found < 0) break;
+    const start = originalIndex[found];
+    const end = originalIndex[found + loweredNeedle.length] ?? haystack.length;
+    if (end > start) result.push({ start, end });
+    from = found + Math.max(1, loweredNeedle.length);
+  }
+  return result;
 }
 
 /**
- * Visualizador interativo de terminal (TUI Pager) com buffer alternativo de tela,
- * quebra visual responsiva, rolagem, busca, sumário e modo editor integrado.
+ * Leitor interativo de terminal (pager): tela alternativa, quebra de linha
+ * responsiva, rolagem, busca, sumário, ajuda e atalho para o editor.
  */
 export async function runInteractiveViewer(options: InteractiveOptions): Promise<void> {
-  let { fileName, filePath, fileSize, renderedLines, searchLines, tableOfContents } = options;
-  const displayFileName = fileName.replace(/[\u0000-\u001F\u007F-\u009F]/g, "");
+  const terminal = options.terminal ?? processTerminal();
+  const openEditor = options.openEditor ?? ((filePath: string, io: TerminalIO) => runInteractiveEditor({ filePath, terminal: io }));
+  const displayFileName = options.fileName.replace(/[\u0000-\u001F\u007F-\u009F]/g, "");
 
-  if (renderedLines.length === 0 || !process.stdout.isTTY || !process.stdin.isTTY) {
-    for (const line of renderedLines) {
-      console.log(line);
-    }
+  let content = await options.load(terminal.columns());
+
+  if (!terminal.isTTY) {
+    for (const line of content.renderedLines) terminal.write(line + "\n");
     return;
   }
 
-  // Define o título da janela apenas quando há um terminal realmente interativo.
-  process.stdout.write(`\x1B]0;MarkiiDown - ${displayFileName}\x07`);
-
+  let visualLines: VisualLine[] = [];
+  let sourceToFirstVisual: number[] = [];
+  let layoutColumns = -1;
   let scrollTop = 0;
-  let searchActive = false;
-  let searchQuery = "";
-  let searchMatches: number[] = [];
-  let searchMatchSet = new Set<number>();
-  let currentMatchIndex = 0;
-  let showHelpOverlay = false;
-  let showTocOverlay = false;
-  let tocSelectedIndex = 0;
-  let tocScrollTop = 0;
-  let visualLines: { text: string; sourceLineIndex: number }[] = [];
-  let sourceToFirstVisualLine: number[] = [];
-  let layoutWidth = 0;
+  let mode: "view" | "help" | "toc" | "search" = "view";
+  let searchInput = "";
+  let search: SearchState | null = null;
+  let message: string | null = null;
+  let messageTimer: ReturnType<typeof setTimeout> | null = null;
+  let tocSelected = 0;
+  let tocScroll = 0;
+  let finished = false;
+  let reloadGeneration = 0;
+  const highlightedCache = new Map<number, string[]>();
 
-  const getTerminalRows = () => process.stdout.rows || 24;
-  const getTerminalCols = () => process.stdout.columns || 80;
+  const rows = () => Math.max(2, terminal.rows());
+  const columns = () => Math.max(10, terminal.columns());
+  const contentHeight = () => rows() - 1;
 
-  function getContentHeight(): number {
-    return Math.max(1, getTerminalRows() - 1);
-  }
+  // ---------------------------------------------------------------- layout
 
-  function rebuildVisualLines(width: number): void {
-    if (layoutWidth === width && visualLines.length > 0) return;
+  function rebuildLayout(width: number, force = false): void {
+    if (!force && width === layoutColumns) return;
+    const topSource = visualLines[scrollTop]?.source ?? 0;
+    const topSegment = visualLines[scrollTop]?.segment ?? 0;
+    const indent = " ".repeat(content.gutterWidth ?? 0);
+    const nextVisual: VisualLine[] = [];
+    const nextFirst: number[] = [];
 
-    const previousTopSource = visualLines[scrollTop]?.sourceLineIndex ?? 0;
-    const nextVisualLines: { text: string; sourceLineIndex: number }[] = [];
-    const nextSourceMap: number[] = [];
-
-    renderedLines.forEach((line, sourceLineIndex) => {
-      nextSourceMap[sourceLineIndex] = nextVisualLines.length;
-      for (const wrappedLine of wrapAnsi(expandTabsAnsi(line), width)) {
-        nextVisualLines.push({ text: wrappedLine, sourceLineIndex });
-      }
+    content.renderedLines.forEach((line, source) => {
+      nextFirst[source] = nextVisual.length;
+      const wrapped = wrapAnsiDetailed(line, width, indent);
+      wrapped.lines.forEach((text, segment) => nextVisual.push({ text, source, segment, start: wrapped.starts[segment] }));
     });
 
-    visualLines = nextVisualLines;
-    sourceToFirstVisualLine = nextSourceMap;
-    layoutWidth = width;
-    scrollTop = sourceToFirstVisualLine[previousTopSource] ?? 0;
+    visualLines = nextVisual;
+    sourceToFirstVisual = nextFirst;
+    layoutColumns = width;
+    highlightedCache.clear();
+    const firstOfTop = sourceToFirstVisual[Math.min(topSource, sourceToFirstVisual.length - 1)] ?? 0;
+    scrollTop = clampScroll(firstOfTop + Math.min(topSegment, countSegments(topSource) - 1));
   }
 
-  function getMaxScroll(): number {
-    return Math.max(0, visualLines.length - getContentHeight());
+  function countSegments(source: number): number {
+    const first = sourceToFirstVisual[source];
+    if (first === undefined) return 1;
+    const next = sourceToFirstVisual[source + 1] ?? visualLines.length;
+    return Math.max(1, next - first);
   }
 
-  function scrollToLine(lineIndex: number, contextLines = 0): void {
-    const visualLineIndex = sourceToFirstVisualLine[lineIndex] ?? 0;
-    scrollTop = Math.min(getMaxScroll(), Math.max(0, visualLineIndex - contextLines));
+  function maxScroll(): number {
+    return Math.max(0, visualLines.length - contentHeight());
   }
 
-  function renderScreen() {
-    const totalRows = getTerminalRows();
-    const totalCols = getTerminalCols();
-    const contentHeight = Math.max(1, totalRows - 1); // Exatamente 1 linha reservada para o rodapé
-    rebuildVisualLines(totalCols);
-    const totalLines = visualLines.length;
-    scrollTop = Math.min(scrollTop, Math.max(0, totalLines - contentHeight));
+  function clampScroll(value: number): number {
+    return Math.min(maxScroll(), Math.max(0, value));
+  }
 
-    let buffer = "";
+  /** Diferença entre o texto visível da linha (com numeração) e o texto pesquisável. */
+  function searchPrefixLength(source: number): number {
+    const plain = stripAnsi(content.renderedLines[source] ?? "");
+    const searchable = content.searchLines?.[source] ?? plain;
+    const prefix = plain.length - searchable.length;
+    return prefix >= 0 && plain.endsWith(searchable) ? prefix : 0;
+  }
 
-    if (showHelpOverlay) {
-      buffer += renderHelpBuffer(totalCols, contentHeight, totalRows);
-      process.stdout.write(buffer);
-      return;
-    }
+  /** Linhas visuais de uma linha lógica com as ocorrências da busca destacadas. */
+  function highlightedSegments(source: number): string[] | null {
+    if (!search) return null;
+    const ranges = search.byLine.get(source);
+    if (!ranges) return null;
+    const cached = highlightedCache.get(source);
+    if (cached) return cached;
 
-    if (showTocOverlay) {
-      buffer += renderTocBuffer(totalCols, contentHeight, totalRows);
-      process.stdout.write(buffer);
-      return;
-    }
+    const prefix = searchPrefixLength(source);
+    const shift = (list: typeof ranges) => list.map((range) => ({ start: range.start + prefix, end: range.end + prefix }));
+    let line = content.renderedLines[source];
+    line = highlightRanges(line, shift(ranges.filter((range) => range.match !== search!.current)), MATCH_STYLE);
+    line = highlightRanges(line, shift(ranges.filter((range) => range.match === search!.current)), CURRENT_MATCH_STYLE);
+    const segments = wrapAnsiDetailed(line, layoutColumns, " ".repeat(content.gutterWidth ?? 0)).lines;
+    highlightedCache.set(source, segments);
+    return segments;
+  }
 
-    // 1. Renderiza as linhas posicionando o cursor linha por linha
-    for (let row = 1; row <= contentHeight; row++) {
-      const lineIndex = scrollTop + (row - 1);
-      buffer += `\x1B[${row};1H\x1B[2K`; // Move para linha exata e limpa a linha
+  // ----------------------------------------------------------------- busca
 
-      if (lineIndex < totalLines) {
-        const visualLine = visualLines[lineIndex];
-        const line = visualLine?.text || "";
-        if (searchQuery && visualLine && searchMatchSet.has(visualLine.sourceLineIndex)) {
-          const plain = padToWidth(stripAnsi(line), totalCols);
-          buffer += pc.bgYellow(pc.black(plain));
-        } else {
-          buffer += truncateAnsi(line, totalCols);
+  /**
+   * Busca em cada parágrafo inteiro: linhas que são continuação da anterior
+   * (quebradas só por falta de espaço) são juntadas com um espaço, para achar
+   * frases que caíram na quebra. Cada ocorrência é depois repartida entre as
+   * linhas que ela ocupa.
+   */
+  function runSearch(query: string): void {
+    const matches: SearchState["matches"] = [];
+    const byLine: SearchState["byLine"] = new Map();
+    const total = content.renderedLines.length;
+    const searchable = (index: number) => content.searchLines?.[index] ?? stripAnsi(content.renderedLines[index]);
+
+    for (let first = 0; first < total; ) {
+      let last = first;
+      while (last + 1 < total && content.continued?.[last + 1]) last++;
+
+      let joined = "";
+      const starts: number[] = [];
+      for (let index = first; index <= last; index++) {
+        if (index > first) joined += " ";
+        starts.push(joined.length);
+        joined += searchable(index);
+      }
+
+      for (const found of findAllCaseInsensitive(joined, query)) {
+        const matchIndex = matches.length;
+        let firstPiece: { line: number; start: number; end: number } | null = null;
+        for (let index = first; index <= last; index++) {
+          const lineStart = starts[index - first];
+          const lineEnd = lineStart + searchable(index).length;
+          const start = Math.max(found.start, lineStart);
+          const end = Math.min(found.end, lineEnd);
+          if (start >= end) continue;
+          const piece = { start: start - lineStart, end: end - lineStart, match: matchIndex };
+          byLine.set(index, [...(byLine.get(index) ?? []), piece]);
+          firstPiece ??= { line: index, start: piece.start, end: piece.end };
         }
+        if (firstPiece) matches.push(firstPiece);
+      }
+      first = last + 1;
+    }
+
+    search = { query, matches, current: 0, byLine };
+    highlightedCache.clear();
+  }
+
+  function visualIndexOfMatch(match: { line: number; start: number }): number {
+    const first = sourceToFirstVisual[match.line] ?? 0;
+    const offset = match.start + searchPrefixLength(match.line);
+    let index = first;
+    const end = first + countSegments(match.line);
+    while (index + 1 < end && visualLines[index + 1].start <= offset) index++;
+    return index;
+  }
+
+  function revealMatch(): void {
+    if (!search || search.matches.length === 0) return;
+    const target = visualIndexOfMatch(search.matches[search.current]);
+    // Deixa duas linhas de contexto acima da ocorrência
+    if (target < scrollTop || target >= scrollTop + contentHeight()) scrollTop = clampScroll(target - 2);
+    highlightedCache.clear();
+  }
+
+  function jumpToFirstMatchFromTop(): void {
+    if (!search || search.matches.length === 0) return;
+    const topSource = visualLines[scrollTop]?.source ?? 0;
+    const index = search.matches.findIndex((match) => match.line >= topSource);
+    search.current = index >= 0 ? index : 0;
+    revealMatch();
+  }
+
+  function moveMatch(step: 1 | -1): void {
+    if (!search || search.matches.length === 0) {
+      showMessage(search ? `Nenhuma ocorrência de “${search.query}”` : "Nenhuma busca ativa. Pressione / para buscar.");
+      return;
+    }
+    const total = search.matches.length;
+    const next = search.current + step;
+    if (next >= total) showMessage("Fim do documento: recomeçando do início");
+    else if (next < 0) showMessage("Início do documento: continuando do fim");
+    search.current = (next + total) % total;
+    revealMatch();
+  }
+
+  function showMessage(text: string, durationMs = 2500): void {
+    message = text;
+    if (messageTimer) clearTimeout(messageTimer);
+    messageTimer = setTimeout(() => {
+      message = null;
+      messageTimer = null;
+      if (!finished) render();
+    }, durationMs);
+  }
+
+  // ------------------------------------------------------------------ tela
+
+  function render(): void {
+    if (finished) return;
+    const width = columns();
+    const height = contentHeight();
+    rebuildLayout(width);
+    scrollTop = clampScroll(scrollTop);
+
+    let frame = "\x1B[?25l";
+    const body = mode === "help" ? helpLines(width) : mode === "toc" ? tocLines(width, height) : null;
+
+    for (let row = 0; row < height; row++) {
+      frame += `\x1B[${row + 1};1H\x1B[0m`;
+      if (body) {
+        frame += truncateAnsi(body[row] ?? "", width);
       } else {
-        buffer += pc.dim("~");
+        const visual = visualLines[scrollTop + row];
+        if (visual) {
+          const highlighted = highlightedSegments(visual.source);
+          frame += truncateAnsi(highlighted?.[visual.segment] ?? visual.text, width);
+        } else {
+          frame += pc.dim("~");
+        }
       }
+      frame += "\x1B[0m\x1B[K";
     }
 
-    // 2. Renderiza o Rodapé na ÚLTIMA LINHA (totalRows)
-    buffer += `\x1B[${totalRows};1H\x1B[2K`;
-
-    if (searchActive) {
-      const searchPrompt = ` 🔍 Buscar: ${searchQuery}█ (Enter para buscar, Esc para cancelar)`;
-      const clamped = padToWidth(searchPrompt, totalCols);
-      buffer += pc.bgYellow(pc.black(clamped));
-    } else {
-      const percent = totalLines > contentHeight ? Math.min(100, Math.round(((scrollTop + contentHeight) / totalLines) * 100)) : 100;
-      const stats = `${scrollTop + 1}-${Math.min(scrollTop + contentHeight, totalLines)}/${totalLines} (${percent}%)`;
-      
-      let leftText = ` 📄 ${displayFileName} (${formatBytes(fileSize)}) `;
-      let rightText = ` [?] Ajuda  [e] Editar  [t] Sumário  [/] Buscar  [q] Sair  ${stats} `;
-
-      if (Bun.stringWidth(stripAnsi(leftText)) + Bun.stringWidth(stripAnsi(rightText)) > totalCols) {
-        leftText = ` 📄 ${displayFileName} `;
-      }
-      if (Bun.stringWidth(stripAnsi(leftText)) + Bun.stringWidth(stripAnsi(rightText)) > totalCols) {
-        rightText = ` [e] Editar  [q] Sair ${stats} `;
-      }
-
-      leftText = truncateAnsi(leftText, Math.max(0, totalCols - Bun.stringWidth(stripAnsi(rightText))));
-      const leftLen = Bun.stringWidth(stripAnsi(leftText));
-      const rightLen = Bun.stringWidth(stripAnsi(rightText));
-      const fillSpaces = Math.max(0, totalCols - leftLen - rightLen);
-
-      buffer += pc.bgCyan(pc.black(leftText)) + pc.bgBlue(pc.white(" ".repeat(fillSpaces) + rightText));
-    }
-
-    process.stdout.write(buffer);
+    frame += `\x1B[${rows()};1H\x1B[0m` + statusBar(width) + "\x1B[0m";
+    terminal.write(frame);
   }
 
-  function renderHelpBuffer(width: number, contentHeight: number, totalRows: number): string {
-    let buf = "";
-    const lines = [
-      pc.bold(pc.cyan("  📖 MarkiiDown - Teclas de Navegação")),
-      pc.dim("─".repeat(Math.max(10, width - 4))),
-      `  ${pc.yellow("↓ / j / Enter")}     : Rolar 1 linha para baixo`,
-      `  ${pc.yellow("↑ / k")}             : Rolar 1 linha para cima`,
-      `  ${pc.yellow("Espaço / PgDown")}   : Rolar 1 página para baixo`,
-      `  ${pc.yellow("PgUp / b")}          : Rolar 1 página para cima`,
-      `  ${pc.yellow("Home / g")}          : Ir para o início do documento`,
-      `  ${pc.yellow("End / G")}           : Ir para o final do documento`,
-      `  ${pc.yellow("e")}                 : Abrir no Editor Interativo (Editar arquivo)`,
-      `  ${pc.yellow("/")}                 : Buscar texto no documento`,
-      `  ${pc.yellow("n / N")}             : Próxima / Anterior ocorrência da busca`,
-      `  ${pc.yellow("t")}                 : Abrir Sumário (Índice de Seções)`,
-      `  ${pc.yellow("? / h")}             : Abrir / Fechar esta tela de ajuda`,
-      `  ${pc.yellow("q / Esc")}           : Sair do visualizador`,
-      pc.dim("─".repeat(Math.max(10, width - 4))),
-      pc.italic(pc.dim("  Pressione qualquer tecla ou Esc para voltar ao documento...")),
+  function statusBar(width: number): string {
+    const style = (text: string) => (colorEnabled ? pc.bgBlue(pc.white(text)) : `\x1B[7m${text}\x1B[27m`);
+
+    if (mode === "search") {
+      const prompt = ` 🔍 Buscar: ${searchInput}▏`;
+      const hint = "  Enter: buscar · Esc: cancelar ";
+      const text = visibleWidth(prompt) + visibleWidth(hint) <= width ? prompt + " ".repeat(width - visibleWidth(prompt) - visibleWidth(hint)) + hint : prompt;
+      return colorEnabled ? pc.bgYellow(pc.black(padToWidth(text, width))) : `\x1B[7m${padToWidth(text, width)}\x1B[27m`;
+    }
+    if (mode === "help") return style(padToWidth(" Ajuda · qualquer tecla volta ao documento", width));
+    if (mode === "toc") return style(padToWidth(" Sumário · ↑/↓ escolher · Enter ir · Esc/t voltar", width));
+    if (message) return style(padToWidth(` ${message}`, width));
+
+    const total = visualLines.length;
+    const height = contentHeight();
+    const last = Math.min(scrollTop + height, total);
+    const percent = total <= height ? 100 : Math.round((last / total) * 100);
+    const position = ` ${scrollTop + 1}-${last}/${total} (${percent}%) `;
+    const searchInfo = search
+      ? search.matches.length > 0
+        ? ` “${search.query}” ${search.current + 1}/${search.matches.length} `
+        : ` “${search.query}” 0/0 `
+      : "";
+
+    const nameFull = ` 📄 ${displayFileName} (${formatBytes(content.fileSize)}) `;
+    const nameShort = ` 📄 ${displayFileName} `;
+    const shortcutSets = [
+      " [?] Ajuda  [e] Editar  [t] Sumário  [/] Buscar  [q] Sair ",
+      " [?] Ajuda  [/] Buscar  [q] Sair ",
+      " [?] Ajuda  [q] Sair ",
+      "",
     ];
 
-    for (let row = 1; row <= contentHeight; row++) {
-      buf += `\x1B[${row};1H\x1B[2K`;
-      const line = lines[row - 1];
-      if (line) {
-        buf += truncateAnsi(line, width);
+    // Escolhe a combinação mais completa que cabe; o nome do arquivo é cortado por último
+    for (const shortcuts of shortcutSets) {
+      for (const name of [nameFull, nameShort]) {
+        const right = searchInfo + shortcuts + position;
+        const used = visibleWidth(name) + visibleWidth(right);
+        if (used <= width) {
+          const left = colorEnabled ? pc.bgCyan(pc.black(name)) : name;
+          return left + style(" ".repeat(width - used) + right);
+        }
       }
     }
-
-    buf += `\x1B[${totalRows};1H\x1B[2K`;
-    const bottomText = padToWidth(" [Pressione qualquer tecla ou Esc para fechar a ajuda]", width);
-    buf += pc.bgCyan(pc.black(bottomText));
-    return buf;
+    const right = searchInfo + position;
+    const nameSpace = width - visibleWidth(right);
+    if (nameSpace >= 6) {
+      const name = padToWidth(nameShort, nameSpace);
+      return (colorEnabled ? pc.bgCyan(pc.black(name)) : name) + style(right);
+    }
+    return style(padToWidth(right.trim() ? right : position, width));
   }
 
-  function renderTocBuffer(width: number, contentHeight: number, totalRows: number): string {
-    let buf = "";
-    const lines = [
-      pc.bold(pc.cyan("  📑 Sumário do Documento")),
-      pc.dim("─".repeat(Math.max(10, width - 4))),
+  function helpLines(width: number): string[] {
+    const rule = pc.dim("─".repeat(Math.max(10, Math.min(width - 2, 70))));
+    const row = (keys: string, action: string) => `  ${pc.yellow(keys.padEnd(18))} ${action}`;
+    return [
+      pc.bold(pc.cyan("  📖 MarkiiDown — teclas do leitor")),
+      rule,
+      row("↓  j  Enter", "Descer uma linha"),
+      row("↑  k", "Subir uma linha"),
+      row("Espaço  PgDn  f", "Descer uma página"),
+      row("PgUp  b", "Subir uma página"),
+      row("Home  g", "Início do documento"),
+      row("End  G", "Fim do documento"),
+      row("/", "Buscar (sem diferenciar maiúsculas)"),
+      row("n  N", "Próxima / anterior ocorrência"),
+      row("t", "Sumário: títulos ou funções e classes"),
+      row("e", "Editar o arquivo"),
+      row("?  h", "Esta ajuda"),
+      row("q  Esc  Ctrl+C", "Sair"),
+      rule,
     ];
-
-    if (tableOfContents.length === 0) {
-      lines.push(pc.dim("  Nenhum cabeçalho detectado no documento."));
-    } else {
-      const visibleCount = Math.max(1, contentHeight - 4);
-      const maxTocScroll = Math.max(0, tableOfContents.length - visibleCount);
-      tocScrollTop = Math.min(maxTocScroll, Math.max(0, tocScrollTop));
-      const visibleItems = tableOfContents.slice(tocScrollTop, tocScrollTop + visibleCount);
-
-      visibleItems.forEach((item, visibleIndex) => {
-        const itemIndex = tocScrollTop + visibleIndex;
-        const marker = itemIndex === tocSelectedIndex ? pc.cyan(">") : " ";
-        const number = pc.yellow(`[${itemIndex + 1}]`);
-        lines.push(`${marker} ${number} ${item.title}`);
-      });
-    }
-
-    lines.push(pc.dim("─".repeat(Math.max(10, width - 4))));
-    lines.push(pc.dim("  Use ↑/↓ e Enter para abrir; 't' ou Esc fecha o sumário."));
-
-    for (let row = 1; row <= contentHeight; row++) {
-      buf += `\x1B[${row};1H\x1B[2K`;
-      const line = lines[row - 1];
-      if (line) {
-        buf += truncateAnsi(line, width);
-      }
-    }
-
-    buf += `\x1B[${totalRows};1H\x1B[2K`;
-    const bottomText = padToWidth(" [↑/↓] Selecionar  [Enter] Abrir  [t/Esc] Voltar", width);
-    buf += pc.bgCyan(pc.black(bottomText));
-    return buf;
   }
 
-  function performSearch() {
-    searchMatches = [];
-    if (!searchQuery.trim()) return;
-    const cleanQuery = searchQuery.toLowerCase();
-
-    // Pesquisa o texto sem a numeração de linhas: buscar "1" não deve casar
-    // com toda linha cujo número contém 1.
-    renderedLines.forEach((line, index) => {
-      const plainText = (searchLines?.[index] ?? stripAnsi(line)).toLowerCase();
-      if (plainText.includes(cleanQuery)) {
-        searchMatches.push(index);
-      }
+  function tocLines(width: number, height: number): string[] {
+    const entries = content.tableOfContents;
+    const lines = [pc.bold(pc.cyan("  📑 Sumário")), pc.dim("─".repeat(Math.max(10, Math.min(width - 2, 70))))];
+    if (entries.length === 0) {
+      lines.push(pc.dim("  Nenhum título ou símbolo encontrado neste arquivo."));
+      return lines;
+    }
+    const visibleCount = Math.max(1, height - 2);
+    tocScroll = Math.min(Math.max(0, entries.length - visibleCount), Math.max(0, tocScroll));
+    if (tocSelected < tocScroll) tocScroll = tocSelected;
+    if (tocSelected >= tocScroll + visibleCount) tocScroll = tocSelected - visibleCount + 1;
+    const minLevel = Math.min(...entries.map((entry) => entry.level ?? 1));
+    entries.slice(tocScroll, tocScroll + visibleCount).forEach((entry, offset) => {
+      const index = tocScroll + offset;
+      const indent = "  ".repeat(Math.max(0, (entry.level ?? 1) - minLevel));
+      const text = `${indent}${entry.title}`;
+      lines.push(index === tocSelected ? pc.cyan("› ") + pc.bold(text) : "  " + text);
     });
+    return lines;
+  }
 
-    searchMatchSet = new Set(searchMatches);
-    if (searchMatches.length > 0) {
-      currentMatchIndex = 0;
-      scrollToLine(searchMatches[0], 2);
+  // ---------------------------------------------------------------- teclas
+
+  function handleKey(event: InputEvent): void {
+    if (finished) return;
+
+    if (event.kind === "paste") {
+      if (mode === "search") {
+        searchInput += event.text.replace(/[\r\n]+/g, " ").replace(/[\u0000-\u001F\u007F]/g, "");
+        render();
+      }
+      return;
     }
-  }
+    const key = event;
 
-  let cleanedUp = false;
-  function cleanup() {
-    if (cleanedUp) return;
-    cleanedUp = true;
-    // Restaura tela original do usuário, cursor e atributos
-    process.stdout.write("\x1B[?1049l\x1B[?25h\x1B[0m");
-    if (process.stdin.isTTY) {
-      try {
-        process.stdin.setRawMode(false);
-        process.stdin.pause();
-      } catch {}
+    if (key.ctrl && key.name === "c") {
+      void finish();
+      return;
     }
-  }
 
-  // Ativa Alternate Screen Buffer e esconde o cursor
-  process.stdout.write("\x1B[?1049h\x1B[?25l");
+    if (mode === "help") {
+      mode = "view";
+      render();
+      return;
+    }
+    if (mode === "toc") return handleTocKey(key);
+    if (mode === "search") return handleSearchKey(key);
 
-  readline.emitKeypressEvents(process.stdin);
-  if (process.stdin.isTTY) {
-    process.stdin.setRawMode(true);
-    process.stdin.resume();
-  }
-
-  renderScreen();
-
-  const handleResize = () => {
-    renderScreen();
-  };
-  process.stdout.on("resize", handleResize);
-
-  return new Promise<void>((resolvePromise) => {
-    const finish = () => {
-      cleanup();
-      process.stdout.removeListener("resize", handleResize);
-      process.stdin.removeListener("keypress", handleKeypress);
-      resolvePromise();
-    };
-
-    const handleKeypress = async (str: string, key: readline.Key) => {
-      if (key && key.ctrl && key.name === "c") {
-        finish();
+    const height = contentHeight();
+    switch (true) {
+      case key.name === "q" && !key.ctrl && !key.meta:
+      case key.name === "escape":
+        void finish();
         return;
-      }
-
-      if (showHelpOverlay) {
-        showHelpOverlay = false;
-        renderScreen();
+      case key.name === "e" && !key.ctrl && !key.meta:
+        void editFile();
         return;
-      }
-
-      if (showTocOverlay) {
-        if (key && (key.name === "escape" || key.name === "t" || str === "q")) {
-          showTocOverlay = false;
-          renderScreen();
-          return;
-        }
-
-        if (tableOfContents.length === 0) return;
-
-        const visibleCount = Math.max(1, getContentHeight() - 4);
-        if ((key && key.name === "down") || str === "j") {
-          tocSelectedIndex = Math.min(tableOfContents.length - 1, tocSelectedIndex + 1);
-          if (tocSelectedIndex >= tocScrollTop + visibleCount) {
-            tocScrollTop = tocSelectedIndex - visibleCount + 1;
-          }
-          renderScreen();
-          return;
-        }
-        if ((key && key.name === "up") || str === "k") {
-          tocSelectedIndex = Math.max(0, tocSelectedIndex - 1);
-          if (tocSelectedIndex < tocScrollTop) tocScrollTop = tocSelectedIndex;
-          renderScreen();
-          return;
-        }
-        if (key && key.name === "pagedown") {
-          tocSelectedIndex = Math.min(tableOfContents.length - 1, tocSelectedIndex + visibleCount);
-          tocScrollTop = Math.min(tocSelectedIndex, Math.max(0, tableOfContents.length - visibleCount));
-          renderScreen();
-          return;
-        }
-        if (key && key.name === "pageup") {
-          tocSelectedIndex = Math.max(0, tocSelectedIndex - visibleCount);
-          tocScrollTop = tocSelectedIndex;
-          renderScreen();
-          return;
-        }
-        if (key && key.name === "return") {
-          const target = tableOfContents[tocSelectedIndex];
-          scrollToLine(target.lineIndex);
-          showTocOverlay = false;
-          renderScreen();
-          return;
-        }
-        return;
-      }
-
-      if (searchActive) {
-        if (key && key.name === "return") {
-          searchActive = false;
-          performSearch();
-          renderScreen();
-          return;
-        }
-        if (key && (key.name === "escape" || (key.ctrl && key.name === "g"))) {
-          searchActive = false;
-          searchQuery = "";
-          searchMatches = [];
-          searchMatchSet = new Set();
-          renderScreen();
-          return;
-        }
-        if (key && key.name === "backspace") {
-          searchQuery = searchQuery.slice(0, -1);
-          renderScreen();
-          return;
-        }
-        // Aceita qualquer texto imprimível (emoji e caracteres compostos têm
-        // length > 1 em UTF-16), mas não teclas de controle.
-        if (str && !key?.ctrl && !key?.meta && !/[\x00-\x1F\x7F]/.test(str)) {
-          searchQuery += str;
-          renderScreen();
-          return;
-        }
-        return;
-      }
-
-      const totalRows = getTerminalRows();
-      const contentHeight = Math.max(1, totalRows - 1);
-      const maxScroll = Math.max(0, visualLines.length - contentHeight);
-
-      if (str === "q" || (key && key.name === "escape")) {
-        finish();
-        return;
-      }
-
-      if (str === "e" || str === "E") {
-        // Abrir um binário no editor e salvar corromperia o arquivo
-        if (detectFileType(filePath).isBinary) return;
-
-        cleanup();
-        process.stdout.removeListener("resize", handleResize);
-        process.stdin.removeListener("keypress", handleKeypress);
-
-        const editResult = await runInteractiveEditor({ filePath });
-
-        if (editResult.saved && options.onReload) {
-          try {
-            const reloaded = await options.onReload();
-            renderedLines = reloaded.renderedLines;
-            searchLines = reloaded.searchLines;
-            tableOfContents = reloaded.tableOfContents;
-            fileSize = reloaded.fileSize;
-            layoutWidth = 0;
-          } catch {}
-        }
-
-        // Restabelece viewer
-        cleanedUp = false;
-        process.stdout.write("\x1B[?1049h\x1B[?25l");
-        if (process.stdin.isTTY) {
-          process.stdin.setRawMode(true);
-          process.stdin.resume();
-        }
-        process.stdout.on("resize", handleResize);
-        process.stdin.on("keypress", handleKeypress);
-        renderScreen();
-        return;
-      }
-
-      if (str === "?" || str === "h") {
-        showHelpOverlay = true;
-        renderScreen();
-        return;
-      }
-
-      if (str === "t") {
-        showTocOverlay = true;
-        tocSelectedIndex = 0;
-        tocScrollTop = 0;
-        renderScreen();
-        return;
-      }
-
-      if (str === "/") {
-        searchActive = true;
-        searchQuery = "";
-        renderScreen();
-        return;
-      }
-
-      if (str === "n" && searchMatches.length > 0) {
-        currentMatchIndex = (currentMatchIndex + 1) % searchMatches.length;
-        scrollToLine(searchMatches[currentMatchIndex], 2);
-        renderScreen();
-        return;
-      }
-
-      if (str === "N" && searchMatches.length > 0) {
-        currentMatchIndex = (currentMatchIndex - 1 + searchMatches.length) % searchMatches.length;
-        scrollToLine(searchMatches[currentMatchIndex], 2);
-        renderScreen();
-        return;
-      }
-
-      if (
-        (key && (key.name === "down" || key.name === "return")) ||
-        str === "j"
-      ) {
-        if (scrollTop < maxScroll) {
-          scrollTop = Math.min(maxScroll, scrollTop + 1);
-          renderScreen();
-        }
-        return;
-      }
-
-      if ((key && key.name === "up") || str === "k") {
-        if (scrollTop > 0) {
-          scrollTop = Math.max(0, scrollTop - 1);
-          renderScreen();
-        }
-        return;
-      }
-
-      if ((key && key.name === "pagedown") || str === " " || str === "f") {
-        if (scrollTop < maxScroll) {
-          scrollTop = Math.min(maxScroll, scrollTop + contentHeight);
-          renderScreen();
-        }
-        return;
-      }
-
-      if ((key && key.name === "pageup") || str === "b") {
-        if (scrollTop > 0) {
-          scrollTop = Math.max(0, scrollTop - contentHeight);
-          renderScreen();
-        }
-        return;
-      }
-
-      if ((key && key.name === "home") || str === "g") {
+      case key.text === "?" || (key.name === "h" && !key.ctrl && !key.meta):
+        mode = "help";
+        break;
+      case key.name === "t" && !key.ctrl && !key.meta:
+        openToc();
+        break;
+      case key.text === "/":
+        mode = "search";
+        searchInput = "";
+        break;
+      case key.text === "n":
+        moveMatch(1);
+        break;
+      case key.text === "N":
+        moveMatch(-1);
+        break;
+      case key.name === "down" || key.name === "return" || key.name === "enter" || key.text === "j":
+        scrollTop = clampScroll(scrollTop + 1);
+        break;
+      case key.name === "up" || key.text === "k":
+        scrollTop = clampScroll(scrollTop - 1);
+        break;
+      case key.name === "pagedown" || key.name === "space" || key.text === "f":
+        scrollTop = clampScroll(scrollTop + height);
+        break;
+      case key.name === "pageup" || key.text === "b":
+        scrollTop = clampScroll(scrollTop - height);
+        break;
+      case key.name === "home" || key.text === "g":
         scrollTop = 0;
-        renderScreen();
+        break;
+      case key.name === "end" || key.text === "G":
+        scrollTop = maxScroll();
+        break;
+      default:
         return;
-      }
+    }
+    render();
+  }
 
-      if ((key && key.name === "end") || str === "G") {
-        scrollTop = maxScroll;
-        renderScreen();
-        return;
-      }
-    };
+  function openToc(): void {
+    mode = "toc";
+    const topSource = visualLines[scrollTop]?.source ?? 0;
+    // Abre já na seção que está na tela
+    let current = 0;
+    content.tableOfContents.forEach((entry, index) => {
+      if (entry.lineIndex <= topSource) current = index;
+    });
+    tocSelected = current;
+    tocScroll = Math.max(0, current - 2);
+  }
 
-    process.stdin.on("keypress", handleKeypress);
+  function handleTocKey(key: KeyEvent): void {
+    const entries = content.tableOfContents;
+    const page = Math.max(1, contentHeight() - 2);
+    if (key.name === "escape" || key.name === "t" || key.name === "q") {
+      mode = "view";
+    } else if (entries.length === 0) {
+      return;
+    } else if (key.name === "down" || key.text === "j") {
+      tocSelected = Math.min(entries.length - 1, tocSelected + 1);
+    } else if (key.name === "up" || key.text === "k") {
+      tocSelected = Math.max(0, tocSelected - 1);
+    } else if (key.name === "pagedown") {
+      tocSelected = Math.min(entries.length - 1, tocSelected + page);
+    } else if (key.name === "pageup") {
+      tocSelected = Math.max(0, tocSelected - page);
+    } else if (key.name === "home") {
+      tocSelected = 0;
+    } else if (key.name === "end") {
+      tocSelected = entries.length - 1;
+    } else if (key.name === "return" || key.name === "enter") {
+      const target = entries[tocSelected];
+      scrollTop = clampScroll(sourceToFirstVisual[target.lineIndex] ?? 0);
+      mode = "view";
+    } else {
+      return;
+    }
+    render();
+  }
+
+  function handleSearchKey(key: KeyEvent): void {
+    if (key.name === "return" || key.name === "enter") {
+      mode = "view";
+      const query = searchInput;
+      if (query.trim()) {
+        runSearch(query);
+        if (search!.matches.length === 0) showMessage(`Nenhuma ocorrência de “${query}”`);
+        else jumpToFirstMatchFromTop();
+      } else {
+        // Enter com a busca vazia apaga os destaques da busca anterior
+        search = null;
+        highlightedCache.clear();
+      }
+    } else if (key.name === "escape" || (key.ctrl && key.name === "g")) {
+      mode = "view";
+    } else if (key.name === "backspace") {
+      const graphemes = [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(searchInput)];
+      searchInput = graphemes.slice(0, -1).map((part) => part.segment).join("");
+    } else if (key.ctrl && key.name === "u") {
+      searchInput = "";
+    } else if (key.text && !key.ctrl && !key.meta) {
+      searchInput += key.text;
+    } else {
+      return;
+    }
+    render();
+  }
+
+  // --------------------------------------------------- recarregar e editar
+
+  async function reload(): Promise<void> {
+    const generation = ++reloadGeneration;
+    try {
+      const next = await options.load(columns());
+      if (generation !== reloadGeneration || finished) return;
+      const topSource = visualLines[scrollTop]?.source ?? 0;
+      content = next;
+      layoutColumns = -1;
+      visualLines = [];
+      rebuildLayout(columns(), true);
+      scrollTop = clampScroll(sourceToFirstVisual[Math.min(topSource, content.renderedLines.length - 1)] ?? 0);
+      if (search) {
+        const { query } = search;
+        runSearch(query);
+      }
+      tocSelected = Math.min(tocSelected, Math.max(0, content.tableOfContents.length - 1));
+    } catch (error) {
+      showMessage(`Não foi possível recarregar: ${error instanceof Error ? error.message : String(error)}`, 4000);
+    }
+    render();
+  }
+
+  async function editFile(): Promise<void> {
+    if (content.isBinary) {
+      showMessage("Arquivos binários não podem ser editados.");
+      render();
+      return;
+    }
+    // Ordem importa: sair da tela alternativa ANTES de desligar o modo raw
+    // (ver releaseTerminal em terminal-io.ts)
+    leaveScreen();
+    stopInput();
+    stopResize();
+    let saved = false;
+    try {
+      saved = (await openEditor(options.filePath, terminal)).saved;
+    } catch (error) {
+      showMessage(`Erro no editor: ${error instanceof Error ? error.message : String(error)}`, 4000);
+    }
+    if (finished) return;
+    enterScreen();
+    stopInput = terminal.startInput(handleKey);
+    stopResize = terminal.onResize(handleResize);
+    if (saved) await reload();
+    else render();
+  }
+
+  // ------------------------------------------------- terminal e encerramento
+
+  const savedTitle = process.platform === "win32" ? process.title : null;
+
+  function enterScreen(): void {
+    // Tela alternativa, cursor escondido e título da janela
+    terminal.write("\x1B[?1049h\x1B[?25l\x1B[2J");
+    if (savedTitle === null) terminal.write("\x1B[22;0t");
+    terminal.write(`\x1B]0;MarkiiDown - ${displayFileName}\x07`);
+  }
+
+  function leaveScreen(): void {
+    // Devolve o título que a janela tinha antes
+    if (savedTitle !== null) terminal.write(`\x1B]0;${savedTitle.replace(/[\u0000-\u001F\u007F-\u009F]/g, "")}\x07`);
+    else terminal.write("\x1B[23;0t");
+    terminal.write("\x1B[0m\x1B[?25h\x1B[?1049l");
+  }
+
+  let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+  function handleResize(): void {
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      resizeTimer = null;
+      if (finished) return;
+      if (content.widthDependent) void reload();
+      else render();
+    }, 60);
+  }
+
+  let resolveDone: () => void = () => {};
+  const done = new Promise<void>((resolve) => {
+    resolveDone = resolve;
   });
+
+  async function finish(): Promise<void> {
+    if (finished) return;
+    finished = true;
+    if (messageTimer) clearTimeout(messageTimer);
+    if (resizeTimer) clearTimeout(resizeTimer);
+    leaveScreen();
+    stopInput();
+    stopResize();
+    resolveDone();
+  }
+
+  enterScreen();
+  let stopInput = terminal.startInput(handleKey);
+  let stopResize = terminal.onResize(handleResize);
+  render();
+  await done;
 }

@@ -1,7 +1,7 @@
-import { copyFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve, win32 } from "node:path";
-import pc from "picocolors";
+import { dirname, isAbsolute, join, relative, resolve, win32 } from "node:path";
+import { pc } from "./colors.ts";
 import { toWindowsFileVersion } from "./version.ts";
 import { parseRegNamedValue, registerWindowsContextMenu, unregisterWindowsContextMenu } from "./windows-registry.ts";
 
@@ -44,10 +44,60 @@ function isPathInside(parentPath: string, childPath: string): boolean {
   return childRelativePath === "" || (!childRelativePath.startsWith("..") && !isAbsolute(childRelativePath));
 }
 
+/** Nome dos executáveis antigos deixados de lado por swapExecutable. */
+const OLD_EXECUTABLE = /^markiidown\.old-\d+\.exe$/i;
+
+/** Apaga executáveis antigos que ficaram de instalações anteriores (os que ainda estão em uso ficam). */
+export function removeOldExecutables(directory: string): void {
+  let names: string[] = [];
+  try {
+    names = readdirSync(directory);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!OLD_EXECUTABLE.test(name)) continue;
+    try {
+      rmSync(join(directory, name), { force: true });
+    } catch {}
+  }
+}
+
+/**
+ * Coloca o executável novo (`staged`) no lugar do instalado (`target`).
+ *
+ * Com outra janela do MarkiiDown aberta, o Windows não deixa sobrescrever o
+ * .exe em uso (EBUSY/EPERM), mas deixa renomeá-lo. Então o antigo vira
+ * "markiidown.old-<data>.exe" e o novo assume o nome; o antigo é apagado na
+ * próxima instalação ou na desinstalação. Antes a reinstalação simplesmente
+ * falhava nesse caso.
+ */
+export function swapExecutable(staged: string, target: string): void {
+  try {
+    renameSync(staged, target);
+    return;
+  } catch (error) {
+    if (!existsSync(target)) throw error;
+  }
+  const old = join(dirname(target), `markiidown.old-${Date.now()}.exe`);
+  renameSync(target, old);
+  try {
+    renameSync(staged, target);
+  } catch (error) {
+    renameSync(old, target); // desfaz: o instalado continua funcionando
+    throw error;
+  }
+}
+
 async function installExecutable(targetExe: string): Promise<boolean> {
   const currentExe = process.execPath;
+  const targetDir = dirname(targetExe);
+  const staged = join(targetDir, "markiidown.new.exe");
 
   try {
+    removeOldExecutables(targetDir);
+    rmSync(staged, { force: true });
+
     if (isRunningFromBunRuntime(currentExe)) {
       const entryPoint = resolve(import.meta.dir, "index.ts");
       if (!existsSync(entryPoint)) {
@@ -55,14 +105,12 @@ async function installExecutable(targetExe: string): Promise<boolean> {
         return false;
       }
 
-      console.log(pc.cyan("⏳ Compilando o executável standalone antes da instalação..."));
+      console.log(pc.cyan("⏳ Compilando o executável antes da instalação..."));
       const iconFile = resolve(import.meta.dir, "..", "assets", "icon.ico");
       const buildArgs = [currentExe, "build", "--compile", "--minify"];
       if (process.platform === "win32") {
         buildArgs.push("--target=bun-windows-x64");
-        if (existsSync(iconFile)) {
-          buildArgs.push(`--windows-icon=${iconFile}`);
-        }
+        if (existsSync(iconFile)) buildArgs.push(`--windows-icon=${iconFile}`);
         buildArgs.push(
           "--windows-title=MarkiiDown",
           "--windows-description=Leitor e Editor Universal de Arquivos e Markdown",
@@ -70,44 +118,36 @@ async function installExecutable(targetExe: string): Promise<boolean> {
           `--windows-version=${toWindowsFileVersion()}`
         );
       }
-      buildArgs.push(entryPoint, "--outfile", targetExe);
+      buildArgs.push(entryPoint, "--outfile", staged);
 
-      const buildProc = Bun.spawn(buildArgs, { stdout: "inherit", stderr: "inherit" });
+      const buildProc = Bun.spawn(buildArgs, { stdout: "inherit", stderr: "inherit", env: { ...process.env, DO_NOT_TRACK: "1" } });
       const exitCode = await buildProc.exited;
-      if (exitCode !== 0 || !existsSync(targetExe)) {
+      if (exitCode !== 0 || !existsSync(staged)) {
         console.error(pc.red(`❌ Falha ao compilar o executável (código ${exitCode}).`));
         return false;
       }
-
-      console.log(pc.green(`✅ Executável compilado com ícone em: ${targetExe}`));
+      swapExecutable(staged, targetExe);
+      console.log(pc.green(`✅ Executável compilado e instalado em: ${targetExe}`));
     } else if (normalizePathForComparison(currentExe) !== normalizePathForComparison(targetExe)) {
-      copyFileSync(currentExe, targetExe);
-      console.log(pc.green(`✅ Binário copiado para: ${targetExe}`));
+      copyFileSync(currentExe, staged);
+      swapExecutable(staged, targetExe);
+      console.log(pc.green(`✅ Executável copiado para: ${targetExe}`));
     } else {
-      console.log(pc.yellow("ℹ️ O executável já está rodando a partir do diretório de instalação."));
+      console.log(pc.yellow("ℹ️ Este executável já é o instalado; refazendo só a integração com o Windows."));
     }
 
-    // Copia o arquivo de ícone (.ico) dedicado para a pasta de instalação se existir
-    const projectRoot = resolve(import.meta.dir, "..");
-    const candidateIcons = [
-      join(projectRoot, "assets", "icon.ico"),
-      join(process.cwd(), "assets", "icon.ico"),
-      join(resolve(currentExe, ".."), "assets", "icon.ico"),
-      join(resolve(currentExe, ".."), "markiidown.ico"),
-    ];
-
-    const targetIcon = join(resolve(targetExe, ".."), "markiidown.ico");
-    for (const src of candidateIcons) {
-      if (existsSync(src)) {
-        try {
-          copyFileSync(src, targetIcon);
-          break;
-        } catch {}
-      }
+    // Ícone .ico separado: só existe quando a instalação é feita pelo código-fonte.
+    // (O executável compilado já traz o ícone embutido, usado como "exe,0".)
+    const projectIcon = resolve(import.meta.dir, "..", "assets", "icon.ico");
+    if (existsSync(projectIcon)) {
+      try {
+        copyFileSync(projectIcon, join(targetDir, "markiidown.ico"));
+      } catch {}
     }
     return true;
   } catch (error) {
-    console.error(pc.red(`❌ Falha ao instalar o executável: ${error}`));
+    rmSync(staged, { force: true });
+    console.error(pc.red(`❌ Falha ao instalar o executável: ${error instanceof Error ? error.message : error}`));
     return false;
   }
 }
@@ -199,14 +239,15 @@ async function broadcastEnvironmentChange(): Promise<void> {
 /**
  * Adiciona um diretório ao PATH do usuário no Windows (HKCU\Environment\Path) sem privilégios de Administrador
  */
-async function addUserPathWindows(dirToAdd: string): Promise<boolean> {
+async function addUserPathWindows(dirToAdd: string): Promise<"added" | "present" | "failed"> {
   try {
     const currentPath = await readUserPathWindows();
-    if (currentPath === null) return false;
+    if (currentPath === null) return "failed";
     const newPath = appendPathEntry(currentPath, dirToAdd);
-    return newPath === null ? true : await writeUserPathWindows(newPath);
+    if (newPath === null) return "present";
+    return (await writeUserPathWindows(newPath)) ? "added" : "failed";
   } catch {
-    return false;
+    return "failed";
   }
 }
 
@@ -260,9 +301,11 @@ export async function installMarkiiDown(): Promise<boolean> {
   // 3. Adiciona ao PATH do Windows
   let integrationOk = true;
   if (process.platform === "win32") {
-    const pathOk = await addUserPathWindows(targetDir);
-    if (pathOk) {
-      console.log(pc.green(`✅ Diretório adicionado ao PATH do Usuário (HKCU).`));
+    const pathResult = await addUserPathWindows(targetDir);
+    if (pathResult === "added") {
+      console.log(pc.green(`✅ Pasta adicionada ao PATH do usuário (abra um terminal novo para usar "markiidown").`));
+    } else if (pathResult === "present") {
+      console.log(pc.green(`✅ A pasta já estava no PATH do usuário.`));
     } else {
       console.warn(pc.yellow(`⚠️ Não foi possível adicionar ao PATH automaticamente.`));
       integrationOk = false;
@@ -284,9 +327,9 @@ export async function installMarkiiDown(): Promise<boolean> {
 
   console.log(pc.green("\n🎉 Instalação concluída com sucesso!"));
   console.log(`\n💡 ${pc.bold("Como usar agora:")}`);
-  console.log(`   1. Digite ${pc.cyan("markiidown")} em qualquer janela do terminal/PowerShell.`);
-  console.log(`   2. Clique com o botão direito em qualquer arquivo ${pc.cyan(".md")} -> ${pc.bold('"Abrir com MarkiiDown"')}.`);
-  console.log(`   3. Abra com duplo clique associando o MarkiiDown no "Abrir com...".\n`);
+  console.log(`   1. Digite ${pc.cyan("markiidown")} num terminal aberto depois da instalação.`);
+  console.log(`   2. Botão direito em qualquer arquivo -> ${pc.bold('"Abrir com MarkiiDown"')} (no Windows 11, em "Mostrar mais opções").`);
+  console.log(`   3. Para abrir .md com duplo clique: botão direito -> "Abrir com..." -> MarkiiDown -> "Sempre".\n`);
 
   return integrationOk;
 }

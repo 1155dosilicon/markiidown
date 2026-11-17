@@ -1,0 +1,9 @@
+# Configuração do Bun para este projeto.
+
+# Não envia estatísticas de uso do Bun (equivale a DO_NOT_TRACK=1).
+telemetry = false
+
+[test]
+# Deixa os testes independentes do terminal: sem cores por padrão. Testes que
+# verificam cores rodam um processo filho com FORCE_COLOR=1.
+preload = ["./tests/support/setup.ts"]

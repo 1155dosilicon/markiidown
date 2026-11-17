@@ -1,60 +1,41 @@
-# 📦 Documentação de Dependências e Licenças - MarkiiDown
+# Dependências e licenças
 
-Este documento descreve todas as dependências do projeto **MarkiiDown**, a justificativa técnica de cada uma e a análise jurídica de **compatibilidade com a licença GNU GPL-3.0**.
+O MarkiiDown é distribuído sob a **GPL-3.0-or-later**. Todas as dependências
+abaixo têm licenças permissivas (MIT, ISC, BSD-3-Clause, Apache-2.0), que
+podem ser incorporadas num programa GPL-3.0.
 
----
+## Runtime
 
-## ⚖️ Análise de Compatibilidade da Licença GPL-3.0
+| Componente | Licença | Para quê |
+| :--- | :---: | :--- |
+| [Bun](https://bun.sh) 1.4.4+ | MIT (partes LGPL/Apache) | Executa o TypeScript direto, roda os testes (`bun test`) e gera o `.exe` único (`bun build --compile`), que embute o runtime — por isso o executável tem ~110 MB e não precisa de nada instalado. Também fornece `bun:ffi` (chamadas à API do Windows) e `Bun.Terminal` (pseudoterminal usado nos testes). |
 
-O **MarkiiDown** é licenciado sob a **GNU General Public License v3.0 (GPL-3.0-or-later)**.
+A telemetria do Bun fica desligada no projeto (`telemetry = false` em
+`bunfig.toml`; o script de build e o CI também usam `DO_NOT_TRACK=1`). O
+MarkiiDown em si não acessa a rede.
 
-Todas as dependências externas utilizadas possuem licenças permissivas e amplamente compatíveis com a GPLv3:
+## Dependências do programa (`dependencies`)
 
-| Pacote | Licença do Pacote | Compatibilidade com GPL-3.0 | Detalhes |
+| Pacote | Versão | Licença | Para quê |
 | :--- | :---: | :---: | :--- |
-| **`marked`** | MIT | ✅ 100% Compatível | A licença MIT permite incorporação em projetos sob copyleft GPL. |
-| **`marked-terminal`** | MIT | ✅ 100% Compatível | Permissiva MIT compatível com GPLv3. |
-| **`marked-highlight`** | MIT | ✅ 100% Compatível | Permissiva MIT compatível com GPLv3. |
-| **`highlight.js`** | BSD-3-Clause | ✅ 100% Compatível | A cláusula BSD-3 é oficialmente listada pela Free Software Foundation (FSF) como compatível com a GPL. |
-| **`cli-highlight`** | ISC | ✅ 100% Compatível | Permissiva ISC. Traz consigo o `highlight.js` 10.7.3 (BSD-3-Clause). |
-| **`picocolors`** | ISC | ✅ 100% Compatível | A licença ISC é funcionalmente equivalente à MIT/BSD-2 e compatível com a GPL. |
-| **`Bun` (Runtime)** | MIT / LGPL / Apache 2.0 | ✅ 100% Compatível | A compilação standalone com Bun empacota o runtime que suporta GPLv3 sem violar termos. |
+| `marked` | 15.0 | MIT | Analisa o Markdown (tokens). A formatação para o terminal é feita pelo próprio projeto (`src/markdown-terminal.ts`); a para HTML, pelo `marked`. |
+| `marked-highlight` | 2.2 | MIT | Liga o `highlight.js` aos blocos de código na exportação HTML. |
+| `highlight.js` | 11.12 | BSD-3-Clause | Realce de sintaxe, no terminal (convertido para cores ANSI em `src/highlight.ts`) e no HTML. |
+| `node-emoji` | 2.2 | MIT | Converte `:shortcode:` em emoji (`:tada:` → 🎉). Traz `@sindresorhus/is`, `char-regex`, `emojilib`, `skin-tone` e `unicode-emoji-modifier-base`, todos MIT. |
+| `picocolors` | 1.1 | ISC | Cores ANSI. Usado sempre por `src/colors.ts`, que decide se há cores (terminal, `NO_COLOR`, `FORCE_COLOR`). |
 
-> **Conclusão Jurídica:** A distribuição do MarkiiDown sob a licença **GPL-3.0** é plenamente válida, legal e compatível com todo o ecossistema de bibliotecas adotado.
+## Dependências de desenvolvimento (`devDependencies`)
 
----
-
-## 🎯 Runtime e Compilação
-
-### **Bun (`v1.3+`)**
-- **Função:** Runtime TypeScript de ultra-alta velocidade, leitor e gravador de arquivos do sistema (`Bun.file`, `Bun.write`), manipulador de subprocessos (`Bun.spawn`) e compilador standalone de executáveis (`bun build --compile`).
-- **Justificativa Técnica:**
-  - Permite rodar código TypeScript moderno nativamente sem etapa intermediária de compilação ou transpile.
-  - O comando `bun build --compile --minify --target=bun-windows-x64` gera um executável `.exe` independente de ~95 MB que não requer Bun nem Node.js na máquina do usuário final.
-  - A CLI não abre rede em tempo de execução. Um HTML exportado só acessa rede se o próprio Markdown referenciar links ou imagens externos.
-  - `bun:test` fornece a suíte de regressão sem adicionar um framework externo.
-
----
-
-## 📚 Dependências de Produção (`dependencies`)
-
-| Pacote | Versão | Finalidade |
+| Pacote | Licença | Para quê |
 | :--- | :---: | :--- |
-| **`marked`** | `^15.0.7` | Parser de Markdown para nós AST de texto e cabeçalhos. |
-| **`marked-terminal`** | `^7.3.0` | Conversor AST para sequências ANSI de terminal, tabelas com bordas e formatação estilizada. |
-| **`marked-highlight`** | `^2.2.1` | Integração do realce sintático com o pipeline do `marked`. |
-| **`highlight.js`** | `^11.11.1` | Motor de syntax highlighting da exportação HTML (TypeScript, Python, JSON, C#, Rust, etc.). |
-| **`cli-highlight`** | `^2.1.11` | Realce sintático com cores ANSI no terminal (leitor, `--print` e blocos de código do Markdown). Usa internamente o `highlight.js` 10.7.3, versão sem manutenção; o terminal e o HTML usam, portanto, motores diferentes. |
-| **`picocolors`** | `^1.1.1` | Biblioteca minimalista e sem overhead para cores e formatações ANSI no terminal. |
+| `typescript` | Apache-2.0 | Verificação de tipos (`bun run typecheck`). |
+| `@types/bun`, `@types/node` | MIT | Tipos das APIs do Bun e do Node. |
 
----
+## Removidas na 2.1.0
 
-## 🛠️ Dependências de Desenvolvimento (`devDependencies`)
+| Pacote | Motivo |
+| :--- | :--- |
+| `marked-terminal` | Sem manutenção e fonte de vários defeitos (`ESC[0m` no começo dos parágrafos, `*#COLON|*` em cabeçalhos de tabela, linhas `---` sumindo, `#` nos títulos). Também prendia o projeto ao `marked` 15. Trazia `chalk`, `cli-table3`, `ansi-escapes`, `supports-hyperlinks` e outros. |
+| `cli-highlight` | Embutia o highlight.js 10.7.3, sem manutenção: o terminal e o HTML usavam motores diferentes. Trazia `chalk`, `parse5`, `yargs` e outros. |
 
-| Pacote | Versão | Finalidade |
-| :--- | :---: | :--- |
-| **`@types/bun`** | `latest` | Definições de tipo para as APIs nativas do Bun. |
-| **`@types/node`** | `^22.13.9` | Definições de tipo para APIs do Node (`node:readline`, `node:fs`, `node:path`, `node:os`). |
-| **`typescript`** | `^5.8.2` | Verificação estática de tipos. |
-
-O exportador incorpora no próprio HTML as regras de cores usadas pelo `highlight.js`; não há folha de estilos carregada por CDN em tempo de execução.
+Com isso, a instalação passou de ~50 pacotes para 14.

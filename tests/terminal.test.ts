@@ -123,7 +123,8 @@ describe("getRenderedMarkdownLines", () => {
 
     for (const line of inlineCodeLines) {
       const wrapped = wrapAnsi(line ?? "", 8);
-      expect(wrapped.map(stripAnsi).join("")).toBe(stripAnsi(line ?? ""));
+      // Nada se perde (o espaço do ponto de quebra não fica no fim da linha)
+      expect(wrapped.map(stripAnsi).join("").replace(/\s+/g, "")).toBe(stripAnsi(line ?? "").replace(/\s+/g, ""));
       expect(wrapped.every((part) => Bun.stringWidth(stripAnsi(part)) <= 8)).toBe(true);
       expectTokenFullyYellow(line ?? "", "--install", 8);
     }

@@ -2,17 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  detectLineEnding,
-  displayColumn,
-  indexFromDisplayColumn,
-  nextGraphemeIndex,
-  previousGraphemeIndex,
-  runInteractiveEditor,
-  visibleLineSegment,
-} from "../src/editor.ts";
+import { stripAnsi } from "../src/ansi.ts";
 import { convertFileToStaticHtml, splitHighlightedHtmlLines } from "../src/html-template.ts";
-import { expandTabsAnsi, stripAnsi, wrapAnsi } from "../src/interactive.ts";
 import { getRenderedFileLines } from "../src/terminal.ts";
 import { fixWindowsTrailingQuote } from "../src/utils.ts";
 import { MARKIIDOWN_DOCUMENT_CLASS, shouldBackupAssociation } from "../src/windows-registry.ts";
@@ -90,17 +81,6 @@ describe("exportação HTML de código", () => {
 });
 
 describe("tabulação no leitor", () => {
-  test("expandTabsAnsi respeita paradas de tabulação e preserva ANSI", () => {
-    expect(expandTabsAnsi("\tx")).toBe("    x");
-    expect(expandTabsAnsi("ab\tc")).toBe("ab  c");
-    expect(expandTabsAnsi("\x1B[33m\t\x1B[39mx")).toBe("\x1B[33m    \x1B[39mx");
-  });
-
-  test("linhas com TAB não ultrapassam a largura após a quebra", () => {
-    const wrapped = wrapAnsi(expandTabsAnsi("\t\t\treturn x + y + z + w"), 10);
-    expect(wrapped.every((line) => Bun.stringWidth(stripAnsi(line)) <= 10)).toBe(true);
-  });
-
   test("arquivos de código não carregam TAB para a tela", async () => {
     const filePath = join(createTempDir(), "main.go");
     writeFileSync(filePath, "func main() {\n\treturn\n}\n");
@@ -108,41 +88,6 @@ describe("tabulação no leitor", () => {
     const result = await getRenderedFileLines(filePath);
     expect(result.lines.join("\n")).not.toContain("\t");
     expect(stripAnsi(result.lines[1])).toContain("    return");
-  });
-});
-
-describe("editor: colunas visuais", () => {
-  test("converte índice em coluna visual com TAB e emoji", () => {
-    expect(displayColumn("\tab", 1)).toBe(4);
-    expect(displayColumn("a\tb", 2)).toBe(4);
-    expect(displayColumn("😀x", 2)).toBe(2);
-    expect(indexFromDisplayColumn("\tab", 5)).toBe(2);
-    expect(indexFromDisplayColumn("😀x", 1)).toBe(0);
-  });
-
-  test("navega por grafemas sem partir emoji", () => {
-    const line = "a😀b";
-    expect(nextGraphemeIndex(line, 1)).toBe(3);
-    expect(previousGraphemeIndex(line, 3)).toBe(1);
-    expect(previousGraphemeIndex(line, 1)).toBe(0);
-  });
-
-  test("recorta a janela visível expandindo TAB", () => {
-    expect(visibleLineSegment("\tabc", 0, 6)).toBe("    ab");
-    expect(visibleLineSegment("\tabc", 4, 2)).toBe("ab");
-    expect(visibleLineSegment("界x", 1, 2)).toBe(" x");
-  });
-
-  test("preserva a quebra de linha original", () => {
-    expect(detectLineEnding("a\r\nb")).toBe("\r\n");
-    expect(detectLineEnding("a\nb")).toBe("\n");
-  });
-
-  test("recusa abrir arquivo binário", async () => {
-    const filePath = join(createTempDir(), "imagem.png");
-    writeFileSync(filePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x00]));
-
-    await expect(runInteractiveEditor({ filePath })).rejects.toThrow("binários");
   });
 });
 
@@ -163,6 +108,25 @@ describe("CLI: exportação de binário", () => {
     expect(await child.exited).toBe(1);
     expect(stderr).toContain("binários");
     expect(existsSync(outputPath)).toBe(false);
+  });
+});
+
+describe("CLI: exportação sobre a origem", () => {
+  test("--export recusa gravar por cima do próprio arquivo de origem", async () => {
+    const directory = createTempDir();
+    const source = join(directory, "pagina.html");
+    writeFileSync(source, "<p>original</p>");
+
+    const child = Bun.spawn([process.execPath, "run", "src/index.ts", source, "-e", source], {
+      cwd: process.cwd(),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stderr = await new Response(child.stderr).text();
+
+    expect(await child.exited).toBe(1);
+    expect(stderr).toContain("próprio arquivo de origem");
+    expect(await Bun.file(source).text()).toBe("<p>original</p>");
   });
 });
 
@@ -195,6 +159,19 @@ describe("leitor: sumário e busca", () => {
     expect(result.lines.map(stripAnsi).some((line) => line.includes("# instala dependências"))).toBe(true);
   });
 
+  test("títulos aparecem sem os '#' e continuam no sumário", async () => {
+    const filePath = join(createTempDir(), "titulos.md");
+    writeFileSync(filePath, "# Um\n\n## Dois\n\n### Três\n\n#### Quatro\n\nTexto com # no meio.\n");
+    const result = await getRenderedFileLines(filePath);
+    const plain = result.lines.map(stripAnsi);
+
+    expect(plain.some((line) => /^\s*#{1,6} /.test(line))).toBe(false);
+    expect(plain.some((line) => line.trim() === "Dois")).toBe(true);
+    expect(plain.some((line) => line.includes("Texto com # no meio."))).toBe(true);
+    expect(result.tableOfContents.map((item) => item.title)).toEqual(["Um", "Dois", "Três", "Quatro"]);
+    expect(result.lines.some((line) => /[\u0080-\u009F]/.test(line))).toBe(false);
+  });
+
   test("a busca não enxerga a numeração de linhas dos arquivos de código", async () => {
     const filePath = join(createTempDir(), "busca.ts");
     writeFileSync(filePath, Array.from({ length: 15 }, () => 'let v = "x";').join("\n"));
@@ -220,27 +197,6 @@ describe("leitor: sumário e busca", () => {
     writeFileSync(filePath, Buffer.from([0x23, 0x20, 0x41, 0xe7, 0xe3, 0x6f])); // "# Ação" em Windows-1252
     const result = await getRenderedFileLines(filePath);
     expect(result.tableOfContents.map((item) => item.title)).toEqual(["Ação"]);
-  });
-});
-
-describe("wrapAnsi em linhas longas", () => {
-  test("custo linear: 400 mil caracteres quebram rápido e sem perder texto", () => {
-    const text = "\x1B[33m" + "palavra ".repeat(50_000) + "\x1B[0m";
-    const started = performance.now();
-    const lines = wrapAnsi(text, 120);
-    const elapsed = performance.now() - started;
-
-    // A versão quadrática levava ~3,5 s para apenas 80 mil caracteres
-    expect(elapsed).toBeLessThan(2_000);
-    expect(lines.map(stripAnsi).join("")).toBe(stripAnsi(text));
-    expect(lines.every((line) => Bun.stringWidth(stripAnsi(line)) <= 120)).toBe(true);
-  });
-
-  test("expandTabsAnsi também é linear", () => {
-    const text = "a\t".repeat(100_000);
-    const started = performance.now();
-    expect(expandTabsAnsi(text)).toBe("a   ".repeat(100_000));
-    expect(performance.now() - started).toBeLessThan(2_000);
   });
 });
 

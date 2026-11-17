@@ -1,7 +1,7 @@
 {
   "name": "markiidown",
-  "version": "2.0.1",
-  "description": "Visualizador e Editor Universal de Arquivos e Markdown (.md, .ts, .py, .json, .rs, .go, .txt, etc.) standalone em TypeScript com Bun, TUI interativo e executável Windows.",
+  "version": "2.1.0",
+  "description": "Leitor e editor de Markdown e de arquivos de texto/código para o terminal (Windows, Bun/TypeScript): leitor interativo, editor, exportação HTML e integração com o Explorer.",
   "type": "module",
   "main": "src/index.ts",
   "bin": {
@@ -35,15 +35,14 @@
   "author": "Eli / MarkiiDown Team",
   "license": "GPL-3.0-or-later",
   "dependencies": {
-    "cli-highlight": "^2.1.11",
     "highlight.js": "^11.11.1",
     "marked": "^15.0.7",
     "marked-highlight": "^2.2.1",
-    "marked-terminal": "^7.3.0",
+    "node-emoji": "^2.2.0",
     "picocolors": "^1.1.1"
   },
   "devDependencies": {
-    "@types/bun": "latest",
+    "@types/bun": "^1.3.14",
     "@types/node": "^22.13.9",
     "typescript": "^5.8.2"
   }

@@ -1,116 +1,139 @@
-# LLMs Context & Architecture Guide: MarkiiDown (v2.0.1)
+# MarkiiDown — guia técnico (para quem mantém o código, pessoas ou agentes de IA)
 
-> Este arquivo fornece contexto técnico arquitetural para Modelos de Linguagem (LLMs) e agentes que precisem manter ou estender a base de código do **MarkiiDown**.
+Leitor/editor de Markdown, código e texto para o terminal do Windows, em
+TypeScript com Bun, distribuído como um único `.exe`. Este arquivo explica
+**como o código está organizado, as regras que ele segue e as armadilhas já
+encontradas**. Para o uso, veja o [README](README.md); para o que mudou, o
+[CHANGELOG](CHANGELOG.md).
 
----
+## Comandos
 
-## 📌 Visão Geral do Projeto
-
-**MarkiiDown** é um leitor e editor universal de arquivos e Markdown **100% standalone** em **TypeScript** executado pelo **Bun**, com interface interativa no terminal (TUI Pager & TUI Editor), suporte a mais de 30 linguagens de código, instalador em espaço de usuário sem privilégios de administrador (`%LOCALAPPDATA%\MarkiiDown`), ícone multi-resolução oficial embutido no PE e integrado ao Windows Explorer (Menu de Contexto, Novo Documento Markdown, Fundo de Pasta e Desktop) e compilável para binário **`.exe` (Windows x64)** sob licença **GPL-3.0**.
-
-### Características Centrais:
-1. **Zero Rede / Zero Portas:** Não inicia servidores HTTP e não abre portas no sistema.
-2. **Leitor & Editor Universal (`src/utils.ts`, `src/terminal.ts`, `src/editor.ts`):**
-   - Suporta arquivos Markdown (`.md`, `.markdown`), código-fonte (TypeScript, Python, Rust, Go, C/C++, SQL, HTML/CSS, Shell, etc.), arquivos de configuração (JSON, YAML, TOML, XML, ENV, Dockerfile), logs e texto plano.
-   - Detecta e previne com segurança a renderização acidental de arquivos binários.
-3. **Editor Interativo TUI em Tela Cheia (`src/editor.ts`):**
-   - Ativado via `-E` / `--edit`, `--new` (sempre cria arquivo novo com nome único estilo Explorer) ou pressionando `e` no leitor interativo.
-   - Buffer de tela cheia com numeração de linhas dinâmica, navegação precisa por cursor, inserção e remoção de caracteres/linhas, suporte a Tab (2 espaços) e auto-indentação.
-   - Histórico de desfazer/refazer (Undo/Redo: `Ctrl+Z` / `Ctrl+Y`) em memória.
-   - Salvamento direto e atômico no disco com `Ctrl+S` e confirmação ao fechar caso haja alterações não salvas.
-4. **Leitor Interativo no Terminal (TUI Pager - `src/interactive.ts`):**
-   - Utiliza Alternate Screen Buffer (`\x1B[?1049h`), quebra ANSI/Unicode responsiva sem perda de conteúdo (`wrapAnsi`), rolagem, busca interativa (`/`), sumário navegável de seções ou símbolos de código (`t`) e ajuda (`?`).
-5. **Realce Sintático Confiável (`src/terminal.ts`):**
-   - Sanitização de caracteres de controle antes do highlighting para preservar sequências ANSI de escape (`\x1B`).
-   - Numeração de linha e extração de funções/classes/símbolos para visualização rápida.
-6. **Instalador sem Administrador (`--install` / `--uninstall` - `src/installer.ts` & `src/windows-registry.ts`):**
-   - Compila o executável standalone com ícone e metadados PE (`--windows-icon`, `--windows-title`, etc.) e instala em `%LOCALAPPDATA%\MarkiiDown\markiidown.exe`.
-   - Copia o ícone oficial para `%LOCALAPPDATA%\MarkiiDown\markiidown.ico`.
-   - Adiciona ao `PATH` do usuário (`HKCU\Environment\Path`).
-   - Registra no Windows Shell via `HKCU\Software\Classes`:
-     - `"Abrir com MarkiiDown"` em qualquer arquivo (`*\shell\MarkiiDown`).
-     - `"Novo" -> "Documento Markdown"` (`.md\ShellNew`, `.markdown\ShellNew`, `MarkiiDown.Document`).
-     - `"Novo arquivo com MarkiiDown"` (`"%V\novo.md" --new` / `"%1\novo.md" --new`) sobre pastas, no fundo de pastas e no Desktop (`Directory\shell`, `Directory\Background`, `DesktopBackground`).
-     - Lista de aplicativos (`Applications\<nome-do-exe>`).
-   - Guarda as associações anteriores de `.md`/`.markdown` em `HKCU\Software\MarkiiDown\Backup` e as restaura no `--uninstall` (somente se o usuário não mudou depois).
-   - A resolução de pasta ignora arquivos de sistema (`desktop.ini`, `thumbs.db`) para nunca abri-los por engano.
-   - Notifica o Windows Explorer para atualizar o cache de ícones imediatamente via `ie4uinit.exe -show`.
-7. **Modo Impressão Direta (`--print` / `-p`):** Exibe o conteúdo formatado com cores ANSI diretamente na saída padrão (stdout).
-8. **Modo Monitoramento (`--watch` / `-w`):** Observa a pasta do arquivo para sobreviver a salvamentos por substituição atômica e atualiza a exibição com debounce.
-9. **Modo Exportação (`--export` / `-e`):** Converte para `.html`/`.htm` com CSS de realce embutido, numeração de linha e tema escuro/claro, sem dependências de CDN.
-10. **Documentação Multilíngue:** `README.md` (Português), `README.en.md` (Inglês), `README.es.md` (Espanhol).
-
----
-
-## 🏗️ Estrutura de Arquivos
-
-```
-markiidown/
-├── assets/
-│   └── icon.ico          # Ícone multi-resolução oficial (16x16 até 256x256)
-├── dist/
-│   └── markiidown.exe    # Binário portátil standalone gerado
-├── exemplos/             # Arquivos de código em várias linguagens para testes
-│   ├── app.ts
-│   ├── script.py
-│   ├── server.go
-│   ├── main.rs
-│   ├── programa.cpp
-│   ├── query.sql
-│   ├── config.yaml
-│   └── Dockerfile
-├── src/
-│   ├── index.ts          # Ponto de entrada e despacho das ações da CLI
-│   ├── cli.ts            # Parser puro e validado de argumentos da CLI
-│   ├── editor.ts         # Motor do Editor TUI (Undo, Redo, Cursor, Salvamento Ctrl+S)
-│   ├── interactive.ts    # Motor do TUI Pager (render loop, alternate screen, scroll, busca, sumário)
-│   ├── terminal.ts       # Formatador de terminal (Markdown e código com syntax highlight)
-│   ├── installer.ts      # Instalação/Desinstalação em %LOCALAPPDATA% e gerenciador de PATH em HKCU
-│   ├── windows-registry.ts # Registro no menu de contexto, ShellNew, fundo de pastas e SHChangeNotify
-│   ├── html-template.ts  # Gerador de HTML com CSS/scripts embutidos para exportação
-│   ├── marked-terminal.d.ts # Tipagem local da extensão marked-terminal
-│   └── utils.ts          # Resolução de arquivos, detecção de formato e métricas de leitura
-├── tests/                # 40 testes unitários e de regressão executados por bun:test
-├── scripts/
-│   ├── build-exe.ts      # Script de compilação com metadados PE e ícone embutido
-│   └── generate-icon.ts  # Gerador do arquivo icon.ico multi-resolução
-├── exemplo.md            # Arquivo Markdown com casos de teste
-├── package.json          # Metadados, scripts Bun e licença GPL-3.0-or-later
-├── tsconfig.json         # Configurações do compilador TypeScript
-├── LICENSE               # GNU General Public License v3.0
-├── DEPENDENCIAS.md       # Documentação detalhada das dependências e análise GPL
-├── README.md             # Documentação em Português (Principal)
-├── README.en.md          # Documentação em Inglês
-├── README.es.md          # Documentação em Espanhol
-└── llms.md               # Este arquivo de contexto para agentes de IA
+```powershell
+bun install                    # dependências
+bun run check                  # tsc --noEmit + bun test (rode sempre antes de entregar)
+bun test tests/e2e.test.ts     # ponta a ponta num pseudoterminal real (ConPTY)
+bun run build                  # dist\markiidown.exe
+$env:MARKIIDOWN_E2E_EXE = (Resolve-Path dist\markiidown.exe).Path; bun test tests/e2e.test.ts
+bun run src/index.ts --install # compila e instala em %LOCALAPPDATA%\MarkiiDown
 ```
 
----
+## Fluxo
 
-## 🔧 Fluxo de Instalação no Windows (`src/installer.ts`)
-
-1. **Destino do Binário:** `%LOCALAPPDATA%\MarkiiDown\markiidown.exe`.
-2. **Ícone Oficial:** `%LOCALAPPDATA%\MarkiiDown\markiidown.ico`.
-3. **PATH do Usuário:** Adiciona o diretório em `HKCU\Environment\Path` sem exigir elevação UAC / Administrador.
-4. **Menu de Contexto & ShellNew:** Adiciona chaves em `HKCU\Software\Classes` apontando diretamente para o `.ico` e executável.
-5. **Recarregar Cache de Ícones:** Aciona `ie4uinit.exe -show` para atualização visual imediata no Explorer.
-
----
-
-## 🔨 Pipeline de Compilação do Executável
-
-```bash
-bun build --compile --minify --windows-icon=assets/icon.ico --windows-title="MarkiiDown" --windows-description="Visualizador e Editor Universal de Arquivos e Markdown" --windows-publisher="MarkiiDown" --windows-version="2.0.1.0" --target=bun-windows-x64 ./src/index.ts --outfile ./dist/markiidown.exe
 ```
-- Produz um executável único e portátil para Windows x64.
-- Não necessita de Bun, Node ou qualquer ferramenta externa instalada no computador de destino.
-
----
-
-## ✅ Validação
-
-```bash
-bun run typecheck   # tsc --noEmit
-bun test            # 40 testes unitários e de regressão
-bun run check       # executa ambos
+index.ts ── cli.ts (argumentos → { action | mode, arquivo, opções })
+   │
+   ├─ --install/--uninstall/--register ── installer.ts ── windows-registry.ts
+   ├─ --edit / --new ─────────────────── editor.ts
+   ├─ --export ───────────────────────── html-template.ts
+   └─ leitor / --print / --watch ─────── terminal.ts: getRenderedFileLines(arquivo, { width })
+                                             ├─ Markdown → markdown-terminal.ts (+ highlight.ts nos blocos)
+                                             └─ código/texto → highlight.ts + numeração + sumário (utils.ts)
+                                          interactive.ts (leitor) mostra essas linhas
 ```
+
+`getRenderedFileLines` devolve: `lines` (prontas para a tela, com cores e
+numeração), `searchLines` (texto puro sem numeração, para a busca),
+`tableOfContents`, `gutterWidth` (recuo das linhas quebradas) e
+`widthDependent` (Markdown depende da largura; o leitor renderiza de novo ao
+redimensionar).
+
+## Módulos
+
+| Arquivo | Responsabilidade |
+| :--- | :--- |
+| `cli.ts` | Analisa argumentos sem efeitos colaterais; rejeita opções desconhecidas e combinações contraditórias. |
+| `colors.ts` | **Única fonte de cores.** `colorEnabled` = sem `NO_COLOR` e (com `FORCE_COLOR` ou saída num terminal). Exporta `pc`. |
+| `ansi.ts` | Texto com ANSI: estado SGR, hyperlinks OSC 8, `wrapAnsi` (com recuo e posições), `truncateAnsi`, `normalizeAnsiLines`, `highlightRanges`, `withBaseStyle`. |
+| `markdown-terminal.ts` | Renderizador Markdown → linhas de terminal, já quebradas na largura, com recuo em listas/citações, alertas do GitHub, tabelas que encolhem, hyperlinks. Usa só o *lexer* do `marked`. |
+| `highlight.ts` | highlight.js 11 → linhas ANSI (tema de 16 cores) e opções `--longas` de shell numa cor só. |
+| `terminal.ts` | Lê e formata arquivos; modos `--print` e `--watch`; detecção de hyperlinks; `sanitizeTerminalInput`. |
+| `keys.ts` | `KeyDecoder`: bytes do teclado → teclas e colagens (Esc imediato, CSI/SS3 com modificadores, bracketed paste, UTF-8 partido). |
+| `terminal-io.ts` | `TerminalIO`: terminal real (`processTerminal`) ou falso (`fakeTerminal`, para testes). Liga modo raw e bracketed paste. |
+| `interactive.ts` | Leitor: layout visual, rolagem, busca com destaque, sumário, ajuda, título da janela, chamada do editor. |
+| `editor.ts` | Editor: buffer de linhas, histórico agrupado, colagem, salvamento, confirmação de saída, aviso de arquivo alterado no disco. |
+| `text-file.ts` | Detecta e regrava a codificação (UTF-8, UTF-8 BOM, UTF-16 LE/BE, Windows-1252). |
+| `safe-write.ts` | Gravação segura: temporário + `ReplaceFileW` (Windows) ou `rename`; segue links simbólicos. |
+| `html-template.ts` | HTML autocontido; ids de títulos iguais aos do GitHub; HTML do Markdown escapado. |
+| `installer.ts` | Instalação, `PATH` do usuário (HKCU), troca do `.exe` em uso, remoção agendada da pasta. |
+| `windows-registry.ts` | Menu de contexto, "Novo", "Abrir com", associação do `.md` com backup/restauração. Só HKCU. |
+| `utils.ts` | Tipo de arquivo, escolha do arquivo da pasta, nomes únicos ("novo (2).md"), sumário de código. |
+
+## Regras que o código segue
+
+1. **Toda linha entregue à tela é autocontida**: abre os estilos de que precisa
+   e fecha tudo no fim (SGR e hyperlink). Assim qualquer linha pode ser
+   desenhada sozinha, em qualquer ordem, sem herdar nem vazar estilo.
+   `wrapAnsi`/`truncateAnsi` preservam isso; `normalizeAnsiLines` conserta
+   linhas que não seguem.
+2. **Cores só por `src/colors.ts`** (`import { pc } from "./colors.ts"`), nunca
+   `import pc from "picocolors"` direto: o padrão do picocolors liga cores no
+   Windows mesmo com a saída redirecionada.
+3. **Conteúdo de arquivo nunca vai cru para o terminal.** O leitor passa tudo
+   por `sanitizeTerminalInput`; o editor mostra controles como símbolos
+   (`cellOf`); entidades `&#27;` não são decodificadas.
+4. **Ordem ao sair do leitor/editor: primeiro sair da tela alternativa
+   (`ESC[?1049l`), depois desligar o modo raw.** Ao contrário, no Windows
+   (ConPTY/Windows Terminal), o console do processo fica inválido: toda escrita
+   seguinte dá EPIPE e `setRawMode` falha com errno 32. Detalhes em
+   `terminal-io.ts`. O teste "leitor → editor → salvar" pega isso.
+5. **Teclado só via `TerminalIO.startInput`** (`KeyDecoder`). Não use
+   `readline.emitKeypressEvents`: espera 500 ms no Esc e junta Esc + tecla
+   seguinte em "Alt+tecla".
+6. **Larguras com `Bun.stringWidth`** (ignora ANSI, conta emoji/CJK como 2).
+   TAB é expandido antes (`expandTabsAnsi`), porque `stringWidth("\t")` é 0.
+7. **Salvar sempre por `writeFileSafely`**, preservando codificação e final de
+   linha do arquivo.
+8. **Registro só em HKCU** e nunca apontando para arquivos dentro da pasta do
+   projeto (o usuário apaga `~/proj` de vez em quando). A associação anterior
+   do `.md` é guardada em `HKCU\Software\MarkiiDown\Backup` e restaurada só se
+   ainda for a nossa.
+9. **Cada correção vem com teste de regressão** e uma entrada no CHANGELOG
+   dizendo o que acontecia e o que acontece agora.
+
+## Testes
+
+| Arquivo | O que cobre |
+| :--- | :--- |
+| `ansi.test.ts`, `keys.test.ts` | Utilidades ANSI e decodificador de teclado. |
+| `markdown-terminal.test.ts`, `highlight.test.ts` | Renderização de Markdown e realce. |
+| `interactive.test.ts`, `editor.test.ts` | Leitor e editor com `fakeTerminal`; a tela é reconstruída por `tests/support/virtual-terminal.ts`. |
+| `e2e.test.ts` | Programa inteiro num pseudoterminal real (`Bun.Terminal` → ConPTY no Windows). |
+| demais | CLI, arquivos/codificação, HTML, instalador, Registro (funções puras), salvamento seguro. |
+
+- `bunfig.toml` carrega `tests/support/setup.ts`, que liga `NO_COLOR`: os
+  testes dão o mesmo resultado num terminal ou no CI. Testes que conferem cores
+  rodam um processo filho com `FORCE_COLOR=1` ou passam `createColors(true)`.
+- `tests/support/tui.ts` (`launchTui`) abre o programa num pseudoterminal e
+  permite `write(teclas)`, `waitForText`, `settle` e `screen` (grade com
+  texto e atributos de cada célula). `screen-dump.ts` imprime a tela com os
+  estilos, útil para depurar.
+
+## Armadilhas já encontradas
+
+- **Bun + `String.raw` com acentos**: o transpilador do Bun 1.4 transforma
+  `é` em `é` literal dentro de `String.raw`. Não use `String.raw` com
+  texto não ASCII.
+- **Ctrl+C em testes**: o pseudoterminal do `Bun.Terminal` não converte Ctrl+C
+  em SIGINT (nem para `ping`). Teste o tratamento de SIGINT com
+  `process.emit("SIGINT")`.
+- **ConPTY reescreve a saída**: o que chega ao terminal não é o que o programa
+  escreveu, por isso os testes reconstroem a tela em vez de comparar bytes.
+- **`.exe` em uso não pode ser sobrescrito** (EBUSY/EPERM), mas pode ser
+  renomeado — é o que `swapExecutable` faz.
+- **Processos filhos do Bun morrem com ele** (Job do Windows). A remoção da
+  pasta na desinstalação usa `cmd /c start` para o PowerShell sobreviver.
+- **`reg.exe`** chamado pelo Bun escreve em UTF-8 (o Bun troca a página de
+  código do console), então valores com acento no Registro funcionam.
+- **`process.title`** no Windows devolve o título atual do console; é assim
+  que o leitor restaura o título ao sair.
+- **Testes de desempenho**: meça com entradas pequenas e crescentes. Uma linha
+  gigante contra código quadrático já esgotou a memória e travou o PC.
+
+## Publicar uma versão
+
+1. Atualize `version` no `package.json` (é a única fonte da versão; o `.exe`
+   e o `--version` leem dela).
+2. Escreva a seção no `CHANGELOG.md`.
+3. `bun run check` e os testes de ponta a ponta contra o `.exe`.
+4. Crie a tag `vX.Y.Z` e envie: o GitHub Actions (`.github/workflows/release.yml`)
+   roda os testes, gera o `.exe` e anexa à release.

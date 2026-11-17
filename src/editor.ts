@@ -1,6 +1,10 @@
-import readline from "node:readline";
-import pc from "picocolors";
-import { padToWidth, stripAnsi, truncateAnsi } from "./ansi.ts";
+import { statSync } from "node:fs";
+import { basename } from "node:path";
+import { padToWidth, truncateAnsi, visibleWidth } from "./ansi.ts";
+import { colorEnabled, pc } from "./colors.ts";
+import type { InputEvent, KeyEvent } from "./keys.ts";
+import { writeFileSafely } from "./safe-write.ts";
+import { processTerminal, type TerminalIO } from "./terminal-io.ts";
 import {
   ENCODING_LABELS,
   encodeText,
@@ -12,46 +16,69 @@ import {
 import { detectFileType, TAB_SIZE } from "./utils.ts";
 
 export interface EditorResult {
+  /** O arquivo foi gravado pelo menos uma vez nesta sessão. */
   saved: boolean;
+  /** Ficaram alterações sem salvar (o usuário escolheu descartar). */
   modified: boolean;
 }
 
 export interface EditorOptions {
   filePath: string;
+  /** Conteúdo inicial no lugar do arquivo (usado em testes). */
   initialContent?: string;
+  terminal?: TerminalIO;
 }
 
+export type LineEnding = "\r\n" | "\n" | "\r";
+
+const LINE_BREAK = /\r\n|\r|\n/;
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 /**
- * Mantém a quebra de linha original do arquivo (CRLF no Windows) ao salvar
+ * Final de linha predominante do arquivo (CRLF no Windows, LF, ou CR do Mac
+ * antigo). Sem quebras de linha, usa LF.
  */
-export function detectLineEnding(content: string): "\r\n" | "\n" {
-  return content.includes("\r\n") ? "\r\n" : "\n";
+export function detectLineEnding(content: string): LineEnding {
+  const crlf = (content.match(/\r\n/g) ?? []).length;
+  const lf = (content.match(/\n/g) ?? []).length - crlf;
+  const cr = (content.match(/\r/g) ?? []).length - crlf;
+  if (crlf === 0 && lf === 0 && cr === 0) return "\n";
+  if (crlf >= lf && crlf >= cr) return "\r\n";
+  return lf >= cr ? "\n" : "\r";
 }
 
+const LINE_ENDING_LABELS: Record<LineEnding, string> = { "\r\n": "CRLF", "\n": "LF", "\r": "CR" };
+
 /*
- * O cursor do editor é um índice na string (unidades UTF-16), mas a tela usa
- * colunas visuais: TAB avança até a próxima parada e emoji/CJK ocupam 2
- * colunas. As funções abaixo convertem entre as duas medidas.
- *
- * O segmentador é percorrido de forma preguiçosa: as funções param assim que
- * chegam à coluna/índice pedido, sem segmentar a linha inteira (linhas muito
- * longas deixavam cada tecla lenta).
+ * O cursor é um índice na string (unidades UTF-16), mas a tela usa colunas:
+ * TAB avança até a próxima parada, emoji/CJK ocupam 2 colunas e caracteres de
+ * controle aparecem como um símbolo de 1 coluna (␛, ␀...). Todas as contas
+ * de coluna passam por `cellOf`, então tela e cursor sempre concordam.
  */
 function* graphemes(text: string): Generator<string> {
   for (const part of graphemeSegmenter.segment(text)) yield part.segment;
 }
 
-function graphemeWidth(segment: string, column: number): number {
-  return segment === "\t" ? TAB_SIZE - (column % TAB_SIZE) : Bun.stringWidth(segment);
+/** Como o grafema aparece na tela e quantas colunas ocupa. */
+function cellOf(segment: string, column: number): { text: string; width: number; special: boolean } {
+  if (segment === "\t") {
+    const width = TAB_SIZE - (column % TAB_SIZE);
+    return { text: " ".repeat(width), width, special: false };
+  }
+  const code = segment.codePointAt(0)!;
+  if (segment.length === 1 && (code < 0x20 || code === 0x7f)) {
+    // Mostrado como "Control Pictures" (␀ ␇ ␛ ...) em vez de ser enviado ao terminal
+    return { text: code === 0x7f ? "␡" : String.fromCharCode(0x2400 + code), width: 1, special: true };
+  }
+  if (code >= 0x80 && code <= 0x9f) return { text: "�", width: 1, special: true };
+  const width = Bun.stringWidth(segment);
+  if (width === 0) return { text: "·", width: 1, special: true };
+  return { text: segment, width, special: false };
 }
 
 export function displayColumn(line: string, index: number): number {
   let column = 0;
-  for (const segment of graphemes(line.slice(0, index))) {
-    column += graphemeWidth(segment, column);
-  }
+  for (const segment of graphemes(line.slice(0, index))) column += cellOf(segment, column).width;
   return column;
 }
 
@@ -59,7 +86,7 @@ export function indexFromDisplayColumn(line: string, targetColumn: number): numb
   let column = 0;
   let index = 0;
   for (const segment of graphemes(line)) {
-    const width = graphemeWidth(segment, column);
+    const { width } = cellOf(segment, column);
     if (column + width > targetColumn) break;
     column += width;
     index += segment.length;
@@ -86,59 +113,103 @@ export function nextGraphemeIndex(line: string, index: number): number {
 }
 
 /**
- * Converte a linha para texto de tela (TAB vira espaços) e recorta a janela
- * visível [startColumn, startColumn + width) em colunas visuais.
+ * Texto de tela da janela [startColumn, startColumn + width) da linha: TAB
+ * vira espaços e caracteres de controle viram símbolos (nunca são enviados
+ * ao terminal, onde um ESC do arquivo mudaria cores ou o título da janela).
  */
 export function visibleLineSegment(line: string, startColumn: number, width: number): string {
   let column = 0;
   let result = "";
   const endColumn = startColumn + width;
-
   for (const segment of graphemes(line)) {
-    const segmentWidth = graphemeWidth(segment, column);
-    const text = segment === "\t" ? " ".repeat(segmentWidth) : segment;
-    const segmentEnd = column + segmentWidth;
-
+    const cell = cellOf(segment, column);
+    const segmentEnd = column + cell.width;
     if (segmentEnd > startColumn && column < endColumn) {
       if (column >= startColumn && segmentEnd <= endColumn) {
-        result += text;
+        result += cell.special && colorEnabled ? pc.dim(cell.text) : cell.text;
       } else {
         // Caractere largo cortado pela borda da janela: preenche com espaços
         result += " ".repeat(Math.min(segmentEnd, endColumn) - Math.max(column, startColumn));
       }
     }
-
     column = segmentEnd;
     if (column >= endColumn) break;
   }
-
   return result;
 }
 
+/** Unidade de indentação do arquivo: TAB se ele já usa TAB, senão 2 ou 4 espaços. */
+export function detectIndentUnit(lines: string[]): string {
+  let tabs = 0;
+  let twoSpaces = 0;
+  let fourSpaces = 0;
+  for (const line of lines) {
+    if (line.startsWith("\t")) tabs++;
+    else if (/^ {2}\S/.test(line)) twoSpaces++;
+    else if (/^ {4}\S/.test(line)) fourSpaces++;
+  }
+  if (tabs > twoSpaces + fourSpaces) return "\t";
+  if (twoSpaces === 0 && fourSpaces > 0) return "    ";
+  return "  ";
+}
+
+const WORD_CHAR = /[\p{L}\p{N}_]/u;
+
+function nextWordIndex(line: string, index: number): number {
+  let position = index;
+  while (position < line.length && WORD_CHAR.test(line[position])) position++;
+  while (position < line.length && !WORD_CHAR.test(line[position])) position++;
+  return position === index ? Math.min(line.length, index + 1) : position;
+}
+
+function previousWordIndex(line: string, index: number): number {
+  let position = index;
+  while (position > 0 && !WORD_CHAR.test(line[position - 1])) position--;
+  while (position > 0 && WORD_CHAR.test(line[position - 1])) position--;
+  return position === index ? Math.max(0, index - 1) : position;
+}
+
+interface Snapshot {
+  lines: string[];
+  row: number;
+  col: number;
+  version: number;
+}
+
+/** Limite de memória do histórico: soma das linhas guardadas em todos os passos. */
+const HISTORY_LINE_BUDGET = 2_000_000;
+const HISTORY_MAX_STEPS = 1000;
+/** Digitação contínua vira um único passo de desfazer, até uma pausa deste tamanho. */
+const GROUP_PAUSE_MS = 1000;
+
 /**
- * Editor Interativo de Terminal (TUI Text Editor)
- * Suporta navegação completa, inserção, deleção, quebras com indentação,
- * salvar via Ctrl+S, desfazer/refazer e diálogo seguro de saída.
+ * Editor de texto de terminal em tela cheia: navegação, edição, desfazer e
+ * refazer, colagem, salvamento seguro preservando a codificação e o final de
+ * linha do arquivo, e confirmação antes de sair com alterações.
  */
 export async function runInteractiveEditor(options: EditorOptions): Promise<EditorResult> {
   const { filePath } = options;
-  const file = Bun.file(filePath);
-
+  const terminal = options.terminal ?? processTerminal();
   const typeInfo = detectFileType(filePath);
+  const fileName = basename(filePath).replace(/[\u0000-\u001F\u007F-\u009F]/g, "") || "arquivo";
 
   let rawContent = options.initialContent;
   let isNewFile = false;
-  // Arquivos existentes são salvos na mesma codificação em que foram lidos
   let encoding: TextEncodingName = "utf-8";
+  let diskStamp: { mtimeMs: number; size: number } | null = null;
+
   if (rawContent === undefined) {
-    if (await file.exists()) {
+    let exists = false;
+    try {
+      exists = statSync(filePath).isFile();
+    } catch {}
+    if (exists) {
       // Carregar um binário como texto e salvar corromperia o arquivo
-      if (typeInfo.isBinary) {
-        throw new Error(`Arquivos binários não podem ser editados: ${filePath}`);
-      }
+      if (typeInfo.isBinary) throw new Error(`Arquivos binários não podem ser editados: ${filePath}`);
       const decoded = await readTextFile(filePath);
       rawContent = decoded.text;
       encoding = decoded.encoding;
+      diskStamp = readDiskStamp(filePath);
     } else {
       rawContent = "";
       isNewFile = true;
@@ -146,508 +217,483 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
   }
 
   const lineEnding = detectLineEnding(rawContent);
-  const mixedLineEndings = hasMixedLineEndings(rawContent);
-
-  // Normaliza quebras de linha em array de linhas
-  let lines = rawContent.split(/\r?\n/);
+  let lines = rawContent.split(LINE_BREAK);
   if (lines.length === 0) lines = [""];
+  const indentUnit = detectIndentUnit(lines);
 
-  const fileName = filePath.split(/[\\/]/).pop() || "arquivo";
-
-  let cursorRow = 0;
-  let cursorCol = 0;
-  let preferredCol = 0;
+  let row = 0;
+  let col = 0;
+  let preferredColumn = 0;
   let scrollTop = 0;
   let scrollLeft = 0;
 
-  let isModified = false;
+  let version = 0;
+  let versionCounter = 0;
+  let savedVersion = 0;
   let wasSaved = false;
+  const undoStack: Snapshot[] = [];
+  const redoStack: Snapshot[] = [];
+  let lastEdit: { kind: string; at: number; row: number } | null = null;
+
+  type Prompt = "exit" | "overwrite" | "overwrite-and-exit" | null;
+  let prompt: Prompt = null;
   let statusMessage: string | null = isNewFile
-    ? "📄 Novo arquivo [Pressione Ctrl+S para salvar no disco]"
-    : mixedLineEndings
-    ? pc.yellow(`⚠️ O arquivo mistura finais de linha; ao salvar, todos viram ${lineEnding === "\r\n" ? "CRLF" : "LF"}.`)
+    ? "📄 Arquivo novo — Ctrl+S cria o arquivo no disco"
+    : hasMixedLineEndings(rawContent)
+    ? pc.yellow(`⚠️ Finais de linha misturados: ao salvar, todos viram ${LINE_ENDING_LABELS[lineEnding]}.`)
     : null;
-  let statusTimeout: ReturnType<typeof setTimeout> | null = null;
-  let confirmingExit = false;
+  let statusTimer: ReturnType<typeof setTimeout> | null = null;
+  let finished = false;
+  let renderQueued = false;
 
-  // Pilhas de histórico para Undo / Redo
-  interface HistoryState {
-    lines: string[];
-    cursorRow: number;
-    cursorCol: number;
-  }
-  const undoStack: HistoryState[] = [];
-  const redoStack: HistoryState[] = [];
-  const MAX_HISTORY = 100;
+  const isModified = () => version !== savedVersion;
+  const totalRows = () => Math.max(3, terminal.rows());
+  const totalColumns = () => Math.max(20, terminal.columns());
+  const contentHeight = () => totalRows() - 2; // cabeçalho + rodapé
+  const gutterDigits = () => Math.max(2, String(lines.length).length);
+  const gutterWidth = () => gutterDigits() + 3; // " 12 │ "
 
-  // Coluna visual desejada ao navegar com ↑/↓ entre linhas de tamanhos diferentes
-  function syncPreferredCol() {
-    preferredCol = displayColumn(lines[cursorRow], cursorCol);
+  function syncPreferredColumn(): void {
+    preferredColumn = displayColumn(lines[row], col);
   }
 
-  function pushHistory() {
-    undoStack.push({
-      lines: [...lines],
-      cursorRow,
-      cursorCol,
-    });
-    if (undoStack.length > MAX_HISTORY) {
-      undoStack.shift();
-    }
-    redoStack.length = 0; // Limpa redo ao fazer nova alteração
-  }
-
-  function setStatus(msg: string, durationMs = 3000) {
-    statusMessage = msg;
-    if (statusTimeout) clearTimeout(statusTimeout);
-    statusTimeout = setTimeout(() => {
+  function setStatus(message: string, durationMs = 3000): void {
+    statusMessage = message;
+    if (statusTimer) clearTimeout(statusTimer);
+    statusTimer = setTimeout(() => {
       statusMessage = null;
-      render();
+      statusTimer = null;
+      scheduleRender();
     }, durationMs);
   }
 
-  const getTerminalRows = () => Math.max(8, process.stdout.rows || 24);
-  const getTerminalCols = () => Math.max(20, process.stdout.columns || 80);
+  // --------------------------------------------------------------- histórico
 
-  function getContentHeight(): number {
-    return Math.max(1, getTerminalRows() - 2); // 1 linha de cabeçalho + 1 linha de rodapé
+  function historyCost(stack: Snapshot[]): number {
+    return stack.reduce((sum, snapshot) => sum + snapshot.lines.length, 0);
   }
 
-  function getGutterWidth(): number {
-    const totalDigits = Math.max(2, String(lines.length).length);
-    return totalDigits + 3; // ex: " 12 │ "
+  /**
+   * Guarda o estado antes de uma alteração. Alterações seguidas do mesmo tipo
+   * na mesma linha (digitar uma palavra, apagar com Backspace) formam um
+   * único passo; espaço, Enter, pausa ou movimento do cursor fecham o passo.
+   */
+  function beginEdit(kind: "insert" | "delete" | "other", text = ""): void {
+    const now = Date.now();
+    const continuesGroup =
+      kind !== "other" &&
+      lastEdit !== null &&
+      lastEdit.kind === kind &&
+      lastEdit.row === row &&
+      now - lastEdit.at < GROUP_PAUSE_MS &&
+      !(kind === "insert" && /^\s$/.test(text));
+    if (!continuesGroup) {
+      undoStack.push({ lines: [...lines], row, col, version });
+      while (undoStack.length > HISTORY_MAX_STEPS || (undoStack.length > 1 && historyCost(undoStack) > HISTORY_LINE_BUDGET)) {
+        undoStack.shift();
+      }
+    }
+    redoStack.length = 0;
+    lastEdit = kind === "other" ? null : { kind, at: now, row };
+    version = ++versionCounter;
   }
 
-  async function saveFile(): Promise<boolean> {
+  function breakEditGroup(): void {
+    lastEdit = null;
+  }
+
+  function restore(from: Snapshot[], to: Snapshot[]): void {
+    const snapshot = from.pop();
+    if (!snapshot) return;
+    to.push({ lines: [...lines], row, col, version });
+    lines = snapshot.lines;
+    row = Math.min(lines.length - 1, snapshot.row);
+    col = Math.min(lines[row].length, snapshot.col);
+    version = snapshot.version;
+    syncPreferredColumn();
+    breakEditGroup();
+  }
+
+  // ----------------------------------------------------------------- edição
+
+  function insertText(text: string, kind: "insert" | "other" = "insert"): void {
+    const pieces = text.split(LINE_BREAK);
+    beginEdit(pieces.length > 1 ? "other" : kind, text);
+    const before = lines[row].slice(0, col);
+    const after = lines[row].slice(col);
+    if (pieces.length === 1) {
+      lines[row] = before + text + after;
+      col += text.length;
+    } else {
+      const inserted = [before + pieces[0], ...pieces.slice(1, -1), pieces[pieces.length - 1] + after];
+      // Sem splice(...inserted): uma colagem de centenas de milhares de linhas
+      // passaria do limite de argumentos de uma chamada
+      lines = [...lines.slice(0, row), ...inserted, ...lines.slice(row + 1)];
+      row += pieces.length - 1;
+      col = pieces[pieces.length - 1].length;
+    }
+    syncPreferredColumn();
+  }
+
+  function newLineWithIndent(): void {
+    beginEdit("other");
+    const before = lines[row].slice(0, col);
+    const after = lines[row].slice(col);
+    const indent = /^[ \t]*/.exec(before)?.[0] ?? "";
+    lines.splice(row, 1, before, indent + after);
+    row++;
+    col = indent.length;
+    syncPreferredColumn();
+  }
+
+  function deleteBackward(word: boolean): void {
+    if (col > 0) {
+      beginEdit(word ? "other" : "delete");
+      const start = word ? previousWordIndex(lines[row], col) : previousGraphemeIndex(lines[row], col);
+      lines[row] = lines[row].slice(0, start) + lines[row].slice(col);
+      col = start;
+    } else if (row > 0) {
+      beginEdit("other");
+      const previousLength = lines[row - 1].length;
+      lines[row - 1] += lines[row];
+      lines.splice(row, 1);
+      row--;
+      col = previousLength;
+    } else {
+      return;
+    }
+    syncPreferredColumn();
+  }
+
+  function deleteForward(word: boolean): void {
+    const line = lines[row];
+    if (col < line.length) {
+      beginEdit(word ? "other" : "delete");
+      const end = word ? nextWordIndex(line, col) : nextGraphemeIndex(line, col);
+      lines[row] = line.slice(0, col) + line.slice(end);
+    } else if (row < lines.length - 1) {
+      beginEdit("other");
+      lines[row] += lines[row + 1];
+      lines.splice(row + 1, 1);
+    }
+  }
+
+  function dedentLine(): void {
+    const line = lines[row];
+    const removable = line.startsWith("\t") ? 1 : Math.min(indentUnit === "\t" ? TAB_SIZE : indentUnit.length, /^ */.exec(line)![0].length);
+    if (removable === 0) return;
+    beginEdit("other");
+    lines[row] = line.slice(removable);
+    col = Math.max(0, col - removable);
+    syncPreferredColumn();
+  }
+
+  // ---------------------------------------------------------------- salvar
+
+  function readDiskStamp(path: string): { mtimeMs: number; size: number } | null {
     try {
-      const contentToSave = lines.join(lineEnding);
-      let bytes: Uint8Array;
-      let message = pc.green("💾 Arquivo salvo com sucesso!");
+      const stats = statSync(path);
+      return { mtimeMs: stats.mtimeMs, size: stats.size };
+    } catch {
+      return null;
+    }
+  }
+
+  function changedOnDisk(): boolean {
+    if (!diskStamp) return false;
+    const current = readDiskStamp(filePath);
+    return !!current && (current.mtimeMs !== diskStamp.mtimeMs || current.size !== diskStamp.size);
+  }
+
+  function save(): boolean {
+    const content = lines.join(lineEnding);
+    let message = pc.green(`💾 Salvo (${ENCODING_LABELS[encoding]}, ${LINE_ENDING_LABELS[lineEnding]})`);
+    let bytes: Uint8Array;
+    try {
       try {
-        bytes = encodeText(contentToSave, encoding);
+        bytes = encodeText(content, encoding);
       } catch (error) {
         if (!(error instanceof UnrepresentableTextError)) throw error;
         // Gravar "?" no lugar do caractere perderia texto: muda para UTF-8 e avisa
         const previous = ENCODING_LABELS[encoding];
         encoding = "utf-8";
-        bytes = encodeText(contentToSave, encoding);
+        bytes = encodeText(content, encoding);
         message = pc.yellow(`💾 Salvo em UTF-8: "${error.character}" não existe em ${previous}.`);
       }
-      await Bun.write(filePath, bytes);
-      isModified = false;
-      wasSaved = true;
-      setStatus(message, 5000);
-      return true;
-    } catch (err) {
-      setStatus(pc.red(`❌ Erro ao salvar: ${err instanceof Error ? err.message : String(err)}`), 5000);
+      writeFileSafely(filePath, bytes);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const hint = /EPERM|EACCES|EBUSY/.test(detail) ? " (somente leitura ou aberto em outro programa?)" : "";
+      setStatus(pc.red(`❌ Não foi possível salvar: ${detail}${hint}`), 6000);
       return false;
     }
+    savedVersion = version;
+    wasSaved = true;
+    isNewFile = false;
+    diskStamp = readDiskStamp(filePath);
+    breakEditGroup();
+    setStatus(message, 4000);
+    return true;
   }
 
-  function render() {
-    const totalRows = getTerminalRows();
-    const totalCols = getTerminalCols();
-    const contentHeight = getContentHeight();
-    const gutterWidth = getGutterWidth();
-    const textWidth = Math.max(1, totalCols - gutterWidth);
+  // ------------------------------------------------------------------ tela
 
-    // Ajusta scroll vertical
-    if (cursorRow < scrollTop) {
-      scrollTop = cursorRow;
-    } else if (cursorRow >= scrollTop + contentHeight) {
-      scrollTop = cursorRow - contentHeight + 1;
-    }
+  function scheduleRender(): void {
+    if (renderQueued || finished) return;
+    renderQueued = true;
+    queueMicrotask(() => {
+      renderQueued = false;
+      render();
+    });
+  }
 
-    // Ajusta scroll horizontal (em colunas visuais)
-    const cursorDisplayCol = displayColumn(lines[cursorRow], cursorCol);
-    if (cursorDisplayCol < scrollLeft) {
-      scrollLeft = cursorDisplayCol;
-    } else if (cursorDisplayCol >= scrollLeft + textWidth) {
-      scrollLeft = cursorDisplayCol - textWidth + 1;
-    }
+  function render(): void {
+    if (finished) return;
+    const rowsTotal = totalRows();
+    const columnsTotal = totalColumns();
+    const height = contentHeight();
+    const digits = gutterDigits();
+    const textWidth = Math.max(1, columnsTotal - gutterWidth());
 
-    let buffer = "";
+    if (row < scrollTop) scrollTop = row;
+    else if (row >= scrollTop + height) scrollTop = row - height + 1;
+    const cursorColumn = displayColumn(lines[row], col);
+    if (cursorColumn < scrollLeft) scrollLeft = cursorColumn;
+    else if (cursorColumn >= scrollLeft + textWidth) scrollLeft = cursorColumn - textWidth + 1;
 
-    // 1. Cabeçalho (Linha 1)
-    buffer += `\x1B[1;1H\x1B[2K`;
-    const dirtyIndicator = isModified ? pc.yellow("● [Modificado]") : pc.green("○ [Salvo]");
-    const encodingLabel = encoding === "utf-8" ? "" : ` · ${ENCODING_LABELS[encoding]}`;
-    const leftHeader = ` 📝 MarkiiDown Editor │ ${pc.bold(fileName)}  ${dirtyIndicator} (${typeInfo.description}${encodingLabel}) `;
-    const rightHeader = ` Ln ${cursorRow + 1}/${lines.length}, Col ${cursorDisplayCol + 1} `;
+    let frame = "\x1B[?25l";
 
-    const leftLen = Bun.stringWidth(stripAnsi(leftHeader));
-    const rightLen = Bun.stringWidth(stripAnsi(rightHeader));
-    const fillSpaces = Math.max(0, totalCols - leftLen - rightLen);
+    // Cabeçalho: a posição do cursor (direita) nunca some; o nome é cortado antes
+    const state = isModified() ? pc.yellow("● modificado") : pc.green("○ salvo");
+    const details = [typeInfo.description, encoding === "utf-8" ? "" : ENCODING_LABELS[encoding], LINE_ENDING_LABELS[lineEnding]]
+      .filter(Boolean)
+      .join(" · ");
+    const right = ` Ln ${row + 1}/${lines.length}, Col ${cursorColumn + 1} `;
+    const leftFull = ` 📝 ${pc.bold(fileName)}  ${state}  ${pc.dim(details)} `;
+    const leftShort = ` 📝 ${pc.bold(fileName)}  ${state} `;
+    const leftSpace = Math.max(0, columnsTotal - visibleWidth(right));
+    const left = visibleWidth(leftFull) <= leftSpace ? leftFull : truncateAnsi(leftShort, leftSpace);
+    const header = padToWidth(left, leftSpace) + (leftSpace > 0 ? right : truncateAnsi(right, columnsTotal));
+    frame += "\x1B[1;1H\x1B[0m" + (colorEnabled ? pc.bgCyan(pc.black(header)) : `\x1B[7m${header}\x1B[27m`) + "\x1B[0m\x1B[K";
 
-    buffer += pc.bgCyan(pc.black(truncateAnsi(leftHeader, totalCols))) +
-      pc.bgBlue(pc.white(" ".repeat(fillSpaces) + rightHeader));
-
-    // 2. Área de Conteúdo com Linhas e Gutter (Linhas 2 a totalRows - 1)
-    const digits = Math.max(2, String(lines.length).length);
-
-    for (let row = 1; row <= contentHeight; row++) {
-      const screenRow = row + 1;
-      const lineIndex = scrollTop + (row - 1);
-      buffer += `\x1B[${screenRow};1H\x1B[2K`;
-
+    for (let screenRow = 0; screenRow < height; screenRow++) {
+      const lineIndex = scrollTop + screenRow;
+      frame += `\x1B[${screenRow + 2};1H\x1B[0m`;
       if (lineIndex < lines.length) {
-        const lineContent = lines[lineIndex];
-        const isCurrentLine = lineIndex === cursorRow;
-        const lineNumStr = String(lineIndex + 1).padStart(digits, " ");
-        const gutter = isCurrentLine
-          ? pc.bold(pc.yellow(lineNumStr)) + pc.cyan(" │ ")
-          : pc.dim(lineNumStr) + pc.dim(" │ ");
-
-        const visibleSegment = visibleLineSegment(lineContent, scrollLeft, textWidth);
-        const styledText = pc.white(visibleSegment);
-
-        buffer += gutter + styledText;
+        const number = String(lineIndex + 1).padStart(digits, " ");
+        const gutter = lineIndex === row ? pc.bold(pc.yellow(number)) + pc.cyan(" │ ") : pc.dim(number) + pc.dim(" │ ");
+        frame += gutter + visibleLineSegment(lines[lineIndex], scrollLeft, textWidth);
       } else {
-        const emptyGutter = " ".repeat(digits) + pc.dim(" ~ ");
-        buffer += emptyGutter;
+        frame += " ".repeat(digits) + pc.dim(" ~ ");
       }
+      frame += "\x1B[0m\x1B[K";
     }
 
-    // 3. Rodapé / Barra de Status (Linha totalRows)
-    buffer += `\x1B[${totalRows};1H\x1B[2K`;
+    frame += `\x1B[${rowsTotal};1H\x1B[0m` + footer(columnsTotal) + "\x1B[0m";
 
-    if (confirmingExit) {
-      const prompt = " ⚠️ Alterações não salvas! [S] Salvar e Sair  [D] Descartar  [C/Esc] Cancelar ";
-      buffer += pc.bgRed(pc.white(padToWidth(prompt, totalCols)));
-    } else if (statusMessage) {
-      buffer += padToWidth(` ${statusMessage}`, totalCols);
-    } else {
-      const shortcuts = " [Ctrl+S] Salvar  [Esc/Ctrl+Q] Sair  [Tab] Indentar  [Ctrl+Z] Desfazer ";
-      buffer += pc.bgCyan(pc.black(padToWidth(shortcuts, totalCols)));
+    const screenRow = row - scrollTop + 2;
+    const screenColumn = gutterWidth() + (cursorColumn - scrollLeft) + 1;
+    if (!prompt && screenRow >= 2 && screenRow <= rowsTotal - 1 && screenColumn <= columnsTotal) {
+      frame += `\x1B[${screenRow};${screenColumn}H\x1B[?25h`;
     }
-
-    // 4. Posiciona o cursor físico do terminal no ponto exato de edição
-    const screenCursorRow = cursorRow - scrollTop + 2;
-    const screenCursorCol = gutterWidth + (cursorDisplayCol - scrollLeft) + 1;
-
-    if (
-      screenCursorRow >= 2 &&
-      screenCursorRow <= totalRows - 1 &&
-      screenCursorCol >= gutterWidth + 1 &&
-      screenCursorCol <= totalCols
-    ) {
-      buffer += `\x1B[${screenCursorRow};${screenCursorCol}H\x1B[?25h`; // Mostra cursor
-    } else {
-      buffer += `\x1B[?25l`; // Esconde se fora da área visível
-    }
-
-    process.stdout.write(buffer);
+    terminal.write(frame);
   }
 
-  // Prepara terminal
-  process.stdout.write("\x1B[?1049h\x1B[?25h");
-  readline.emitKeypressEvents(process.stdin);
-  if (process.stdin.isTTY) {
-    process.stdin.setRawMode(true);
-    process.stdin.resume();
-  }
-
-  let cleanedUp = false;
-  function cleanup() {
-    if (cleanedUp) return;
-    cleanedUp = true;
-    if (statusTimeout) clearTimeout(statusTimeout);
-    process.stdout.write("\x1B[?1049l\x1B[?25h\x1B[0m");
-    if (process.stdin.isTTY) {
-      try {
-        process.stdin.setRawMode(false);
-        process.stdin.pause();
-      } catch {}
+  function footer(width: number): string {
+    const warn = (text: string) => (colorEnabled ? pc.bgRed(pc.white(padToWidth(text, width))) : `\x1B[7m${padToWidth(text, width)}\x1B[27m`);
+    if (prompt === "exit") {
+      return warn(" ⚠️ Alterações não salvas!  [S] Salvar e sair  [D] Descartar e sair  [Esc] Continuar editando ");
     }
+    if (prompt === "overwrite" || prompt === "overwrite-and-exit") {
+      return warn(" ⚠️ O arquivo mudou no disco desde que foi aberto.  [S] Sobrescrever  [Esc] Cancelar ");
+    }
+    if (statusMessage) return padToWidth(` ${statusMessage}`, width);
+    const options = [
+      " [Ctrl+S] Salvar  [Esc] Sair  [Ctrl+Z] Desfazer  [Ctrl+Y] Refazer  [Tab] Indentar ",
+      " [Ctrl+S] Salvar  [Esc] Sair  [Ctrl+Z] Desfazer  [Ctrl+Y] Refazer ",
+      " ^S Salvar  Esc Sair  ^Z Desfazer ",
+      " ^S Salvar  Esc Sair ",
+    ];
+    const text = options.find((option) => visibleWidth(option) <= width) ?? options[options.length - 1];
+    return colorEnabled ? pc.bgCyan(pc.black(padToWidth(text, width))) : `\x1B[7m${padToWidth(text, width)}\x1B[27m`;
   }
 
-  render();
+  // ---------------------------------------------------------------- teclas
 
-  const handleResize = () => {
-    render();
-  };
-  process.stdout.on("resize", handleResize);
+  function handleEvent(event: InputEvent): void {
+    if (finished) return;
+    if (event.kind === "paste") {
+      if (prompt) return;
+      // Texto colado entra como está: sem auto-indentação a cada linha
+      if (event.text) insertText(event.text.replace(/\r\n|\r/g, "\n"), "other");
+      scheduleRender();
+      return;
+    }
+    handleKey(event);
+    scheduleRender();
+  }
 
-  return new Promise<EditorResult>((resolvePromise) => {
-    let finished = false;
-    const finish = (saved: boolean, modified: boolean) => {
-      finished = true;
-      cleanup();
-      process.stdout.removeListener("resize", handleResize);
-      process.stdin.removeListener("keypress", enqueueKeypress);
-      resolvePromise({ saved, modified });
-    };
+  function handleKey(key: KeyEvent): void {
+    if (prompt) return handlePromptKey(key);
 
-    // As teclas são tratadas uma de cada vez, em ordem. Sem a fila, uma tecla
-    // digitada durante o salvamento era processada no meio dele: o texto novo
-    // ficava marcado como salvo (e se perdia ao sair) ou era descartado pelo
-    // "Salvar e Sair".
-    let keyQueue: Promise<void> = Promise.resolve();
-    const enqueueKeypress = (str: string, key: readline.Key) => {
-      keyQueue = keyQueue
-        .then(() => (finished ? undefined : handleKeypress(str, key)))
-        .catch((error) => {
-          setStatus(pc.red(`❌ Erro: ${error instanceof Error ? error.message : String(error)}`), 5000);
-          render();
-        });
-    };
-
-    const handleKeypress = async (str: string, key: readline.Key) => {
-      // Confirmação de saída quando há alterações pendentes
-      if (confirmingExit) {
-        if (str === "s" || str === "S") {
-          confirmingExit = false;
-          const ok = await saveFile();
-          if (ok) finish(true, false);
-          else render();
+    if (key.ctrl && !key.meta) {
+      switch (key.name) {
+        case "s":
+          if (changedOnDisk()) prompt = "overwrite";
+          else save();
           return;
-        }
-        if (str === "d" || str === "D") {
-          confirmingExit = false;
-          finish(wasSaved, false);
+        case "z":
+          restore(undoStack, redoStack);
           return;
-        }
-        if (str === "c" || str === "C" || (key && key.name === "escape")) {
-          confirmingExit = false;
-          render();
+        case "y":
+          restore(redoStack, undoStack);
           return;
-        }
-        return;
-      }
-
-      // Atalhos globais do editor
-      // Ctrl+S: Salvar
-      if (key && key.ctrl && key.name === "s") {
-        await saveFile();
-        render();
-        return;
-      }
-
-      // Ctrl+Z: Desfazer
-      if (key && key.ctrl && key.name === "z") {
-        if (undoStack.length > 0) {
-          const prevState = undoStack.pop()!;
-          redoStack.push({
-            lines: [...lines],
-            cursorRow,
-            cursorCol,
-          });
-          lines = prevState.lines;
-          cursorRow = Math.min(lines.length - 1, prevState.cursorRow);
-          cursorCol = Math.min(lines[cursorRow].length, prevState.cursorCol);
-          syncPreferredCol();
-          isModified = true;
-          render();
-        }
-        return;
-      }
-
-      // Ctrl+Y: Refazer
-      if (key && key.ctrl && key.name === "y") {
-        if (redoStack.length > 0) {
-          const nextState = redoStack.pop()!;
-          undoStack.push({
-            lines: [...lines],
-            cursorRow,
-            cursorCol,
-          });
-          lines = nextState.lines;
-          cursorRow = Math.min(lines.length - 1, nextState.cursorRow);
-          cursorCol = Math.min(lines[cursorRow].length, nextState.cursorCol);
-          syncPreferredCol();
-          isModified = true;
-          render();
-        }
-        return;
-      }
-
-      // Sair do Editor (Esc ou Ctrl+Q ou Ctrl+C)
-      if ((key && (key.name === "escape" || (key.ctrl && key.name === "q"))) || (key && key.ctrl && key.name === "c")) {
-        if (isModified) {
-          confirmingExit = true;
-          render();
+        case "q":
+        case "c":
+          requestExit();
           return;
-        }
-        finish(wasSaved, isModified);
+      }
+    }
+
+    switch (key.name) {
+      case "escape":
+        requestExit();
+        return;
+      case "up":
+      case "down": {
+        breakEditGroup();
+        const target = key.name === "up" ? row - 1 : row + 1;
+        if (target < 0 || target >= lines.length) return;
+        row = target;
+        col = indexFromDisplayColumn(lines[row], preferredColumn);
         return;
       }
-
-      // Navegação com Teclado
-      if (key && key.name === "up") {
-        if (cursorRow > 0) {
-          cursorRow--;
-          cursorCol = indexFromDisplayColumn(lines[cursorRow], preferredCol);
-          render();
+      case "left":
+        breakEditGroup();
+        if (key.ctrl && col > 0) col = previousWordIndex(lines[row], col);
+        else if (col > 0) col = previousGraphemeIndex(lines[row], col);
+        else if (row > 0) {
+          row--;
+          col = lines[row].length;
         }
+        syncPreferredColumn();
         return;
-      }
-
-      if (key && key.name === "down") {
-        if (cursorRow < lines.length - 1) {
-          cursorRow++;
-          cursorCol = indexFromDisplayColumn(lines[cursorRow], preferredCol);
-          render();
+      case "right":
+        breakEditGroup();
+        if (key.ctrl && col < lines[row].length) col = nextWordIndex(lines[row], col);
+        else if (col < lines[row].length) col = nextGraphemeIndex(lines[row], col);
+        else if (row < lines.length - 1) {
+          row++;
+          col = 0;
         }
+        syncPreferredColumn();
         return;
-      }
-
-      if (key && key.name === "left") {
-        if (cursorCol > 0) {
-          cursorCol = previousGraphemeIndex(lines[cursorRow], cursorCol);
-          syncPreferredCol();
-          render();
-        } else if (cursorRow > 0) {
-          cursorRow--;
-          cursorCol = lines[cursorRow].length;
-          syncPreferredCol();
-          render();
-        }
-        return;
-      }
-
-      if (key && key.name === "right") {
-        if (cursorCol < lines[cursorRow].length) {
-          cursorCol = nextGraphemeIndex(lines[cursorRow], cursorCol);
-          syncPreferredCol();
-          render();
-        } else if (cursorRow < lines.length - 1) {
-          cursorRow++;
-          cursorCol = 0;
-          syncPreferredCol();
-          render();
-        }
-        return;
-      }
-
-      if (key && key.name === "home") {
-        const curLine = lines[cursorRow];
-        const firstNonSpace = curLine.search(/\S/);
-        if (firstNonSpace !== -1 && cursorCol !== firstNonSpace && cursorCol === 0) {
-          cursorCol = firstNonSpace;
-        } else if (cursorCol === firstNonSpace) {
-          cursorCol = 0;
+      case "home": {
+        breakEditGroup();
+        if (key.ctrl) {
+          row = 0;
+          col = 0;
         } else {
-          cursorCol = firstNonSpace !== -1 ? firstNonSpace : 0;
+          // Home "inteligente": primeiro vai ao início do texto, depois à coluna 0
+          const firstText = lines[row].search(/\S/);
+          col = firstText > 0 && col !== firstText ? firstText : 0;
         }
-        syncPreferredCol();
-        render();
+        syncPreferredColumn();
         return;
       }
-
-      if (key && key.name === "end") {
-        cursorCol = lines[cursorRow].length;
-        syncPreferredCol();
-        render();
+      case "end":
+        breakEditGroup();
+        if (key.ctrl) row = lines.length - 1;
+        col = lines[row].length;
+        syncPreferredColumn();
+        return;
+      case "pageup":
+      case "pagedown": {
+        breakEditGroup();
+        const step = contentHeight();
+        row = key.name === "pageup" ? Math.max(0, row - step) : Math.min(lines.length - 1, row + step);
+        scrollTop = key.name === "pageup" ? Math.max(0, scrollTop - step) : scrollTop + step;
+        col = indexFromDisplayColumn(lines[row], preferredColumn);
         return;
       }
-
-      if (key && key.name === "pageup") {
-        cursorRow = Math.max(0, cursorRow - getContentHeight());
-        cursorCol = indexFromDisplayColumn(lines[cursorRow], preferredCol);
-        render();
+      case "backspace":
+        // Alt+Backspace apaga a palavra anterior; Ctrl+Delete, a seguinte
+        deleteBackward(key.meta);
         return;
-      }
-
-      if (key && key.name === "pagedown") {
-        cursorRow = Math.min(lines.length - 1, cursorRow + getContentHeight());
-        cursorCol = indexFromDisplayColumn(lines[cursorRow], preferredCol);
-        render();
+      case "delete":
+        deleteForward(key.ctrl || key.meta);
         return;
-      }
+      case "return":
+      case "enter":
+        newLineWithIndent();
+        return;
+      case "tab":
+        if (key.shift) dedentLine();
+        else insertText(indentUnit, "other");
+        return;
+    }
 
-      // Edição de Texto
-      // Backspace
-      // O histórico só é gravado quando há alteração real; um Backspace no
-      // início do arquivo não pode apagar a pilha de Refazer.
-      if (key && key.name === "backspace") {
-        const curLine = lines[cursorRow];
-        if (cursorCol > 0) {
-          pushHistory();
-          const previousIndex = previousGraphemeIndex(curLine, cursorCol);
-          lines[cursorRow] = curLine.slice(0, previousIndex) + curLine.slice(cursorCol);
-          cursorCol = previousIndex;
-          syncPreferredCol();
-          isModified = true;
-          render();
-        } else if (cursorRow > 0) {
-          pushHistory();
-          const prevLen = lines[cursorRow - 1].length;
-          lines[cursorRow - 1] += curLine;
-          lines.splice(cursorRow, 1);
-          cursorRow--;
-          cursorCol = prevLen;
-          syncPreferredCol();
-          isModified = true;
-          render();
+    if (key.text && !key.ctrl && !key.meta) insertText(key.text);
+  }
+
+  function handlePromptKey(key: KeyEvent): void {
+    const answer = key.text?.toLowerCase();
+    if (key.name === "escape" || answer === "c" || answer === "n") {
+      prompt = null;
+      return;
+    }
+    if (prompt === "exit") {
+      if (answer === "s") {
+        if (changedOnDisk()) {
+          prompt = "overwrite-and-exit";
+          return;
         }
-        return;
+        prompt = null;
+        if (save()) finish();
+      } else if (answer === "d") {
+        prompt = null;
+        finish();
       }
+      return;
+    }
+    if (answer === "s") {
+      const exitAfter = prompt === "overwrite-and-exit";
+      prompt = null;
+      if (save() && exitAfter) finish();
+    }
+  }
 
-      // Delete
-      if (key && key.name === "delete") {
-        const curLine = lines[cursorRow];
-        if (cursorCol < curLine.length) {
-          pushHistory();
-          lines[cursorRow] = curLine.slice(0, cursorCol) + curLine.slice(nextGraphemeIndex(curLine, cursorCol));
-          isModified = true;
-          render();
-        } else if (cursorRow < lines.length - 1) {
-          pushHistory();
-          lines[cursorRow] += lines[cursorRow + 1];
-          lines.splice(cursorRow + 1, 1);
-          isModified = true;
-          render();
-        }
-        return;
-      }
+  function requestExit(): void {
+    if (isModified()) prompt = "exit";
+    else finish();
+  }
 
-      // Enter / Return
-      if (key && key.name === "return") {
-        pushHistory();
-        const curLine = lines[cursorRow];
-        const leftPart = curLine.slice(0, cursorCol);
-        const rightPart = curLine.slice(cursorCol);
+  // -------------------------------------------------------- início e fim
 
-        // Auto-indentação baseada na linha atual
-        const matchIndent = leftPart.match(/^(\s+)/);
-        const indent = matchIndent ? matchIndent[1] : "";
-
-        lines[cursorRow] = leftPart;
-        lines.splice(cursorRow + 1, 0, indent + rightPart);
-        cursorRow++;
-        cursorCol = indent.length;
-        syncPreferredCol();
-        isModified = true;
-        render();
-        return;
-      }
-
-      // Tab
-      if (key && key.name === "tab") {
-        pushHistory();
-        const curLine = lines[cursorRow];
-        const spaces = "  "; // 2 espaços por padrão
-        lines[cursorRow] = curLine.slice(0, cursorCol) + spaces + curLine.slice(cursorCol);
-        cursorCol += spaces.length;
-        syncPreferredCol();
-        isModified = true;
-        render();
-        return;
-      }
-
-      // Caracteres imprimíveis, incluindo emoji (pares substitutos têm length 2)
-      if (str && !key?.ctrl && !key?.meta && !/[\x00-\x1F\x7F]/.test(str)) {
-        pushHistory();
-        const curLine = lines[cursorRow];
-        lines[cursorRow] = curLine.slice(0, cursorCol) + str + curLine.slice(cursorCol);
-        cursorCol += str.length;
-        syncPreferredCol();
-        isModified = true;
-        render();
-        return;
-      }
-    };
-
-    process.stdin.on("keypress", enqueueKeypress);
+  const savedTitle = process.platform === "win32" ? process.title : null;
+  let resolveResult: (result: EditorResult) => void = () => {};
+  const result = new Promise<EditorResult>((resolve) => {
+    resolveResult = resolve;
   });
+
+  function finish(): void {
+    if (finished) return;
+    finished = true;
+    if (statusTimer) clearTimeout(statusTimer);
+    if (savedTitle !== null) terminal.write(`\x1B]0;${savedTitle.replace(/[\u0000-\u001F\u007F-\u009F]/g, "")}\x07`);
+    else terminal.write("\x1B[23;0t");
+    // Sai da tela alternativa ANTES de desligar o modo raw (ver terminal-io.ts)
+    terminal.write("\x1B[0m\x1B[?25h\x1B[?1049l");
+    stopInput();
+    stopResize();
+    resolveResult({ saved: wasSaved, modified: isModified() });
+  }
+
+  terminal.write("\x1B[?1049h\x1B[2J");
+  if (savedTitle === null) terminal.write("\x1B[22;0t");
+  terminal.write(`\x1B]0;MarkiiDown - ${fileName} (editando)\x07`);
+  const stopInput = terminal.startInput(handleEvent);
+  const stopResize = terminal.onResize(() => scheduleRender());
+  render();
+  return result;
 }

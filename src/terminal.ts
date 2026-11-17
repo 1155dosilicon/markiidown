@@ -1,223 +1,123 @@
-import { highlight as highlightCli, supportsLanguage } from "cli-highlight";
-import { Marked } from "marked";
-import { markedTerminal } from "marked-terminal";
-import { watch } from "node:fs";
+import { statSync, watch } from "node:fs";
 import { basename, dirname } from "node:path";
-import pc from "picocolors";
 import { expandTabsAnsi, stripAnsi } from "./ansi.ts";
-import { runInteractiveViewer } from "./interactive.ts";
-import { readTextFile } from "./text-file.ts";
+import { colorEnabled, pc } from "./colors.ts";
+import { highlightToAnsiLines } from "./highlight.ts";
+import { runInteractiveViewer, type ViewerContent } from "./interactive.ts";
+import { renderMarkdownToLines } from "./markdown-terminal.ts";
+import { readTextFile, type TextEncodingName } from "./text-file.ts";
 import {
   calculateReadingTime,
   detectFileType,
-  extractCodeSymbol,
+  extractCodeTableOfContents,
   formatBytes,
-  resolveHighlightLanguage,
   type FileTypeInfo,
 } from "./utils.ts";
 
-/**
- * Marca as linhas de blocos de código renderizados para que o sumário não
- * confunda comentários (`# instala dependências` em bash/python) com
- * cabeçalhos. É um caractere de controle C1: sanitizeTerminalInput remove
- * toda a faixa U+0080–U+009F do documento, então ele só pode vir do próprio
- * renderizador, e é retirado antes de qualquer saída.
- */
-const CODE_LINE_MARKER = "\u0090";
+/** Largura máxima do texto Markdown: linhas muito longas cansam a leitura. */
+export const MAX_MARKDOWN_WIDTH = 100;
 
-const SGR_SEQUENCE_AT_START = /^\x1B\[([0-9;]*)m/;
-const LONG_CLI_OPTION = /(?<![\w-])--[A-Za-z0-9][A-Za-z0-9-]*(?:=[^\s"'`)<>{}\]]+)?/g;
-
-function updateForeground(sequence: string, currentForeground: string | null): string | null {
-  const parametersText = sequence.slice(2, -1);
-  const parameters = parametersText === "" ? [0] : parametersText.split(";").map(Number);
-  let foreground = currentForeground;
-
-  for (let index = 0; index < parameters.length; index++) {
-    const parameter = parameters[index];
-    if (parameter === 0 || parameter === 39) foreground = null;
-    else if ((parameter >= 30 && parameter <= 37) || (parameter >= 90 && parameter <= 97)) {
-      foreground = `\x1B[${parameter}m`;
-    } else if (parameter === 38) {
-      foreground = sequence;
-      break;
-    }
-  }
-
-  return foreground;
-}
+/** Divide em linhas aceitando CRLF, LF e CR sozinho (finais de linha do Mac antigo). */
+export const LINE_BREAK = /\r\n|\r|\n/;
 
 /**
- * Grammars de shell podem dividir opções GNU, por exemplo renderizando
- * `--install` como "-" + "-install". Esta etapa trata a opção como um token
- * atômico e mantém todo o argumento amarelo sem alterar o restante do código.
+ * Remove caracteres de controle (menos TAB, LF e CR) para que um arquivo não
+ * consiga mandar sequências de escape ao terminal (mudar título, cores,
+ * apagar a tela...). Também cobre a faixa C1 (U+0080–U+009F).
  */
-export function normalizeCliOptionHighlight(highlightedCode: string): string {
-  if (!pc.isColorSupported) return highlightedCode;
-
-  const plainCode = stripAnsi(highlightedCode);
-  const ranges = [...plainCode.matchAll(LONG_CLI_OPTION)].map((match) => ({
-    start: match.index,
-    end: match.index + match[0].length,
-  }));
-  if (ranges.length === 0) return highlightedCode;
-
-  let result = "";
-  let rawOffset = 0;
-  let plainOffset = 0;
-  let rangeIndex = 0;
-  let insideRange = false;
-  let foreground: string | null = null;
-
-  while (rawOffset < highlightedCode.length) {
-    const range = ranges[rangeIndex];
-    if (insideRange && range && plainOffset >= range.end) {
-      result += foreground ?? "\x1B[39m";
-      insideRange = false;
-      rangeIndex++;
-      continue;
-    }
-    if (!insideRange && range && plainOffset === range.start) {
-      result += "\x1B[33m";
-      insideRange = true;
-    }
-
-    const remaining = highlightedCode.slice(rawOffset);
-    const sgrMatch = remaining.match(SGR_SEQUENCE_AT_START);
-    if (sgrMatch) {
-      foreground = updateForeground(sgrMatch[0], foreground);
-      if (!insideRange) result += sgrMatch[0];
-      rawOffset += sgrMatch[0].length;
-      continue;
-    }
-
-    result += highlightedCode[rawOffset];
-    rawOffset++;
-    plainOffset++;
-  }
-
-  if (insideRange) result += foreground ?? "\x1B[39m";
-  return result;
-}
-
-function renderCodeBlock(code: string, language?: string): string {
-  // Linguagem desconhecida (```vue, ```mermaid...) fica neutra, como um bloco sem linguagem
-  const resolvedLanguage = resolveHighlightLanguage(language, supportsLanguage);
-  let renderedCode = code;
-
-  if (resolvedLanguage && pc.isColorSupported) {
-    try {
-      renderedCode = normalizeCliOptionHighlight(
-        highlightCli(code, { language: resolvedLanguage, languageSubset: [] })
-      );
-    } catch {
-      renderedCode = code;
-    }
-  }
-
-  const indentation = "  ";
-  return (
-    renderedCode
-      .split("\n")
-      .map((line) => CODE_LINE_MARKER + indentation + line)
-      .join("\n") + "\n\n"
-  );
-}
-
-function createTerminalMarked(): Marked {
-  const terminalMarked = new Marked();
-  terminalMarked.use(
-    markedTerminal(
-      {
-        width: Math.min(process.stdout.columns || 80, 100),
-        // A quebra nativa do marked-terminal separa códigos ANSI do texto na
-        // borda da linha. O pager faz a quebra ANSI/Unicode com segurança.
-        reflowText: false,
-        showPrefix: false,
-        unescape: true,
-        emoji: true,
-        tab: 2,
-        heading: (text: string) => pc.bold(pc.cyan(text)),
-        firstHeading: (text: string) => pc.bold(pc.magenta(text)),
-        secondHeading: (text: string) => pc.bold(pc.green(text)),
-        thirdHeading: (text: string) => pc.bold(pc.yellow(text)),
-        blockquote: (text: string) => pc.italic(pc.gray(text)),
-        listitem: (text: string) => pc.white(text),
-        strong: (text: string) => pc.bold(pc.white(text)),
-        em: (text: string) => pc.italic(pc.white(text)),
-        codespan: (text: string) => pc.yellow(text),
-        del: (text: string) => pc.strikethrough(pc.gray(text)),
-        link: (text: string) => pc.blue(pc.underline(text)),
-        href: (text: string) => pc.dim(pc.blue(text)),
-      },
-      // Sem linguagem declarada, texto técnico e árvores de arquivos devem
-      // permanecer neutros. Blocos ```ts, ```python etc. continuam realçados.
-      { languageSubset: [] }
-    ) as any
-  );
-
-  // marked-terminal 7 não percorre tokens inline aninhados dentro de itens de
-  // lista gerados pelo marked 15. Sem este adaptador, **forte** e `código`
-  // aparecem literais ou com estilo parcial em listas.
-  terminalMarked.use({
-    renderer: {
-      code(token) {
-        return renderCodeBlock(token.text, token.lang);
-      },
-      text(token) {
-        return "tokens" in token && token.tokens
-          ? this.parser.parseInline(token.tokens)
-          : token.text;
-      },
-    },
-  });
-  return terminalMarked;
-}
-
 export function sanitizeTerminalInput(text: string): string {
-  // Preserva tabulação e quebras de linha, mas impede que um documento injete
-  // sequências de controle (OSC/CSI) no terminal do usuário.
   return text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "");
 }
 
-function addLineNumberGutter(lines: string[]): string[] {
-  const totalDigits = Math.max(2, String(lines.length).length);
-  return lines.map((line, index) => pc.dim(String(index + 1).padStart(totalDigits, " ")) + pc.cyan(" │ ") + line);
+/**
+ * O terminal entende hyperlinks OSC 8? Windows Terminal, VS Code, WezTerm,
+ * iTerm2, kitty, Ghostty e terminais VTE recentes, sim. FORCE_HYPERLINK=0/1
+ * decide manualmente.
+ */
+export function terminalSupportsHyperlinks(
+  env: Record<string, string | undefined> = process.env,
+  isTTY = !!process.stdout.isTTY
+): boolean {
+  if (env.FORCE_HYPERLINK !== undefined) return env.FORCE_HYPERLINK !== "0" && env.FORCE_HYPERLINK !== "false";
+  if (!isTTY) return false;
+  if (env.TMUX || env.TERM?.startsWith("screen") || env.TERM?.startsWith("tmux")) return false;
+  if (env.WT_SESSION) return true;
+  if (["vscode", "WezTerm", "iTerm.app", "ghostty"].includes(env.TERM_PROGRAM ?? "")) return true;
+  if (env.TERM === "xterm-kitty") return true;
+  return Number(env.VTE_VERSION ?? 0) >= 5000;
+}
+
+export interface RenderOptions {
+  raw?: boolean;
+  lineNumbers?: boolean;
+  /**
+   * Colunas disponíveis para o Markdown. Padrão: largura do terminal (até
+   * MAX_MARKDOWN_WIDTH) ou sem limite quando a saída não é um terminal.
+   */
+  width?: number;
+}
+
+export interface TocEntry {
+  title: string;
+  lineIndex: number;
+  level?: number;
 }
 
 export interface RenderedFileResult {
+  /** Linhas prontas para a tela (com cores e numeração), uma por linha lógica. */
   lines: string[];
   /** Texto de cada linha sem cores nem numeração, usado pela busca. */
   searchLines: string[];
-  tableOfContents: { title: string; lineIndex: number }[];
+  /** A linha continua o parágrafo da anterior (a busca junta as duas). */
+  continued?: boolean[];
+  tableOfContents: TocEntry[];
   rawText: string;
   sizeBytes: number;
   typeInfo: FileTypeInfo;
+  encoding: TextEncodingName | null;
+  /** Colunas da numeração (gutter); as linhas quebradas recuam isso. */
+  gutterWidth: number;
+  /** O resultado depende da largura (Markdown): o leitor renderiza de novo ao redimensionar. */
+  widthDependent: boolean;
+}
+
+function defaultMarkdownWidth(): number {
+  return process.stdout.isTTY ? Math.min(process.stdout.columns || 80, MAX_MARKDOWN_WIDTH) : Infinity;
+}
+
+function gutterFor(lineCount: number): { digits: number; width: number } {
+  const digits = Math.max(2, String(lineCount).length);
+  return { digits, width: digits + 3 };
+}
+
+function addLineNumberGutter(lines: string[]): string[] {
+  const { digits } = gutterFor(lines.length);
+  return lines.map((line, index) => pc.dim(String(index + 1).padStart(digits, " ")) + pc.cyan(" │ ") + line);
 }
 
 /**
- * Converte qualquer arquivo suportado (Markdown, Código, Texto) para linhas formatadas com ANSI
+ * Lê e formata qualquer arquivo suportado (Markdown, código, texto) em linhas
+ * ANSI, com o sumário (títulos do Markdown ou símbolos do código).
  */
-export async function getRenderedFileLines(
-  filePath: string,
-  options?: { raw?: boolean; lineNumbers?: boolean }
-): Promise<RenderedFileResult> {
-  const file = Bun.file(filePath);
-  if (!(await file.exists())) {
+export async function getRenderedFileLines(filePath: string, options: RenderOptions = {}): Promise<RenderedFileResult> {
+  let sizeBytes: number;
+  try {
+    const stats = statSync(filePath);
+    if (!stats.isFile()) throw new Error("não é um arquivo");
+    sizeBytes = stats.size;
+  } catch {
     throw new Error(`Arquivo não encontrado: ${filePath}`);
   }
 
   const typeInfo = detectFileType(filePath);
-  const sizeBytes = file.size;
 
-  // 1. Tratamento seguro para arquivos binários
   if (typeInfo.isBinary) {
     const lines = [
       "",
-      pc.yellow(`  ⚠️  O arquivo "${basename(filePath)}" é um arquivo binário (${formatBytes(sizeBytes)}).`),
-      pc.dim("     Arquivos binários não podem ser renderizados como texto no terminal."),
+      pc.yellow(`  ⚠️  O arquivo "${sanitizeTerminalInput(basename(filePath))}" é um arquivo binário (${formatBytes(sizeBytes)}).`),
+      pc.dim("     Arquivos binários não podem ser exibidos como texto no terminal."),
       "",
-      `     ${pc.cyan("Caminho:")} ${filePath}`,
+      `     ${pc.cyan("Caminho:")} ${sanitizeTerminalInput(filePath)}`,
       `     ${pc.cyan("Tipo:")}    ${typeInfo.description}`,
       `     ${pc.cyan("Tamanho:")} ${formatBytes(sizeBytes)}`,
       "",
@@ -226,119 +126,89 @@ export async function getRenderedFileLines(
       lines,
       searchLines: lines.map(stripAnsi),
       tableOfContents: [],
-      rawText: "[Binary Content]",
+      rawText: "",
       sizeBytes,
       typeInfo,
+      encoding: null,
+      gutterWidth: 0,
+      widthDependent: false,
     };
   }
 
   // Respeita a codificação do arquivo (UTF-8, UTF-16 com BOM, Windows-1252)
-  const { text: rawText } = await readTextFile(filePath);
-
-  // 2. Se for Markdown e não estiver em modo --raw
-  if (typeInfo.type === "markdown" && !options?.raw) {
-    const renderedText = (await createTerminalMarked().parse(sanitizeTerminalInput(rawText))) as string;
-    const codeLines = new Set<number>();
-    const renderedLines = renderedText.split(/\r?\n/).map((line, index) => {
-      if (!line.includes(CODE_LINE_MARKER)) return expandTabsAnsi(line);
-      codeLines.add(index);
-      return expandTabsAnsi(line.replaceAll(CODE_LINE_MARKER, ""));
-    });
-
-    // Mapeia cabeçalhos para o Sumário (linhas de blocos de código não contam)
-    const tableOfContents: { title: string; lineIndex: number }[] = [];
-    renderedLines.forEach((line, index) => {
-      if (codeLines.has(index)) return;
-      const plain = stripAnsi(line).trim();
-      if (/^#{1,6}\s+/.test(plain)) {
-        tableOfContents.push({
-          title: plain.replace(/^#+\s*/, ""),
-          lineIndex: index,
-        });
-      }
-    });
-
-    // --numbers numera as linhas renderizadas; o sumário já foi extraído acima
-    const lines = options?.lineNumbers ? addLineNumberGutter(renderedLines) : renderedLines;
-
+  const { text: rawText, encoding } = await readTextFile(filePath);
+  const safeText = sanitizeTerminalInput(rawText);
+  const finish = (result: Omit<RenderedFileResult, "rawText" | "sizeBytes" | "typeInfo" | "encoding">): RenderedFileResult => {
+    // Arquivo vazio: uma linha vazia (o leitor sempre tem algo para mostrar)
+    if (result.lines.length === 0) {
+      result = { ...result, lines: [""], searchLines: [""], continued: [false] };
+    }
     return {
-      lines,
-      searchLines: renderedLines.map(stripAnsi),
-      tableOfContents,
+      ...result,
+      // Sem cores, nenhum código ANSI sai (nem os gerados por outras bibliotecas)
+      lines: colorEnabled ? result.lines : result.lines.map(stripAnsi),
       rawText,
       sizeBytes,
       typeInfo,
+      encoding,
     };
-  }
-
-  // 3. Se for Código ou Configuração com Syntax Highlighting
-  const rawLines = sanitizeTerminalInput(rawText).split(/\r?\n/);
-  const safeRawText = rawLines.map((line) => expandTabsAnsi(line)).join("\n");
-  const totalDigits = Math.max(2, String(rawLines.length).length);
-  // Código mostra numeração por padrão; --raw remove, a menos que --numbers seja pedido
-  const showGutter = !options?.raw || !!options?.lineNumbers;
-  const tableOfContents: { title: string; lineIndex: number }[] = [];
-
-  // Mapeia símbolos de código (funções, classes, interfaces, structs, seções) para o sumário
-  const sectionCommentRegex = /^(?:\/\/|#|\/\*|--)\s*(?:\[|\bREGION\b|\bSECTION\b|\bMARK\b|#+)\s*(.*)/i;
-
-  let highlightedText = safeRawText;
-  const resolvedLanguage = resolveHighlightLanguage(typeInfo.language, supportsLanguage);
-  if (resolvedLanguage && !options?.raw && pc.isColorSupported) {
-    try {
-      highlightedText = highlightCli(safeRawText, {
-        language: resolvedLanguage,
-        languageSubset: [],
-        ignoreIllegals: true,
-      });
-    } catch {
-      highlightedText = safeRawText;
-    }
-  }
-
-  const highlightedLines = highlightedText.split(/\r?\n/);
-  const lines: string[] = [];
-  const searchLines: string[] = [];
-
-  for (let i = 0; i < highlightedLines.length; i++) {
-    const rawLine = rawLines[i] ?? "";
-    const lineNumStr = String(i + 1).padStart(totalDigits, " ");
-    const gutter = showGutter ? pc.dim(lineNumStr) + pc.cyan(" │ ") : "";
-    lines.push(gutter + (highlightedLines[i] ?? ""));
-    searchLines.push(stripAnsi(highlightedLines[i] ?? ""));
-
-    // Extrai símbolos para o Sumário
-    const trimmed = rawLine.trim();
-    const symbol = extractCodeSymbol(rawLine);
-    if (symbol) {
-      tableOfContents.push({ title: symbol, lineIndex: i });
-    } else {
-      const sectionMatch = trimmed.match(sectionCommentRegex);
-      if (sectionMatch && sectionMatch[1]) {
-        tableOfContents.push({
-          title: sectionMatch[1].replace(/\*\/$/, "").trim(),
-          lineIndex: i,
-        });
-      }
-    }
-  }
-
-  return {
-    lines,
-    searchLines,
-    tableOfContents,
-    rawText,
-    sizeBytes,
-    typeInfo,
   };
+
+  // Markdown formatado
+  if (typeInfo.type === "markdown" && !options.raw) {
+    const availableWidth = options.width ?? defaultMarkdownWidth();
+    const render = (gutterWidth: number) =>
+      renderMarkdownToLines(safeText, {
+        width: Number.isFinite(availableWidth) ? Math.max(20, Math.min(availableWidth, MAX_MARKDOWN_WIDTH) - gutterWidth) : Infinity,
+        hyperlinks: terminalSupportsHyperlinks(),
+        colors: pc,
+      });
+
+    let rendered = render(0);
+    let gutterWidth = 0;
+    if (options.lineNumbers) {
+      // A numeração ocupa colunas: renderiza de novo descontando a largura dela
+      gutterWidth = gutterFor(rendered.lines.length).width;
+      rendered = render(gutterWidth);
+      gutterWidth = gutterFor(rendered.lines.length).width;
+    }
+
+    return finish({
+      lines: options.lineNumbers ? addLineNumberGutter(rendered.lines) : rendered.lines,
+      searchLines: rendered.searchLines,
+      continued: rendered.continued,
+      tableOfContents: rendered.headings.map(({ title, lineIndex, level }) => ({ title, lineIndex, level })),
+      gutterWidth,
+      widthDependent: true,
+    });
+  }
+
+  // Código, configuração e texto
+  const sourceLines = safeText.split(LINE_BREAK).map((line) => expandTabsAnsi(line));
+  const highlighted =
+    !options.raw && colorEnabled && typeInfo.type === "code" ? highlightToAnsiLines(sourceLines.join("\n"), typeInfo.language) : null;
+  const contentLines = highlighted && highlighted.length === sourceLines.length ? highlighted : sourceLines;
+
+  // Código mostra numeração por padrão; --raw remove, a menos que --numbers seja pedido
+  const showGutter = !options.raw || !!options.lineNumbers;
+  // Texto comum não tem símbolos: "Type something" num .txt não é um "type"
+  const tableOfContents: TocEntry[] = typeInfo.type === "code" ? extractCodeTableOfContents(sourceLines) : [];
+
+  return finish({
+    lines: showGutter ? addLineNumberGutter(contentLines) : contentLines,
+    searchLines: sourceLines,
+    tableOfContents,
+    gutterWidth: showGutter ? gutterFor(contentLines.length).width : 0,
+    widthDependent: false,
+  });
 }
 
 /**
- * Converte Markdown para linhas formatadas com ANSI e mapeia o sumário (Retrocompatibilidade)
+ * Converte Markdown para linhas formatadas e sumário (mantida por compatibilidade).
  */
 export async function getRenderedMarkdownLines(filePath: string): Promise<{
   lines: string[];
-  tableOfContents: { title: string; lineIndex: number }[];
+  tableOfContents: TocEntry[];
   rawMarkdown: string;
   sizeBytes: number;
 }> {
@@ -351,83 +221,76 @@ export async function getRenderedMarkdownLines(filePath: string): Promise<{
   };
 }
 
-/**
- * Abre o leitor interativo de terminal (TUI) para qualquer arquivo
- */
-export async function openInteractiveViewer(
-  filePath: string,
-  options?: { raw?: boolean; lineNumbers?: boolean }
-): Promise<void> {
-  const loadData = async () => {
-    const res = await getRenderedFileLines(filePath, options);
+/** Leitor interativo (TUI) para qualquer arquivo. */
+export async function openInteractiveViewer(filePath: string, options: RenderOptions = {}): Promise<void> {
+  const load = async (columns: number): Promise<ViewerContent> => {
+    const result = await getRenderedFileLines(filePath, { ...options, width: columns });
     return {
-      renderedLines: res.lines,
-      searchLines: res.searchLines,
-      tableOfContents: res.tableOfContents,
-      fileSize: res.sizeBytes,
+      renderedLines: result.lines,
+      searchLines: result.searchLines,
+      continued: result.continued,
+      tableOfContents: result.tableOfContents,
+      fileSize: result.sizeBytes,
+      gutterWidth: result.gutterWidth,
+      widthDependent: result.widthDependent,
+      isBinary: result.typeInfo.isBinary,
     };
   };
-
-  const initial = await loadData();
 
   await runInteractiveViewer({
     fileName: basename(filePath),
     filePath,
-    fileSize: initial.fileSize,
-    renderedLines: initial.renderedLines,
-    searchLines: initial.searchLines,
-    tableOfContents: initial.tableOfContents,
-    onReload: loadData,
+    load,
   });
 }
 
 /**
- * Imprime o arquivo diretamente no terminal com syntax highlighting (sem paginação interativa)
+ * Imprime o arquivo formatado na saída padrão. Num terminal, mostra um
+ * cabeçalho com nome, tamanho, tipo e tempo de leitura; redirecionado
+ * (`> arquivo`, `| outro-programa`), imprime só o conteúdo, sem cores.
  */
-export async function printDirectToTerminal(
-  filePath: string,
-  options?: { raw?: boolean; lineNumbers?: boolean }
-): Promise<void> {
-  const file = Bun.file(filePath);
-  if (!(await file.exists())) {
-    throw new Error(`Arquivo não encontrado: ${filePath}`);
+export async function printDirectToTerminal(filePath: string, options: RenderOptions = {}): Promise<void> {
+  const { lines, rawText, typeInfo, sizeBytes } = await getRenderedFileLines(filePath, options);
+  const output: string[] = [];
+
+  if (process.stdout.isTTY) {
+    const width = Math.min(process.stdout.columns || 80, MAX_MARKDOWN_WIDTH);
+    const separator = pc.cyan("─".repeat(width));
+    const { words, minutes } = calculateReadingTime(rawText);
+    output.push(
+      separator,
+      `${pc.bold(` 📄 ${sanitizeTerminalInput(basename(filePath))}`)} ${pc.dim(`(${sanitizeTerminalInput(filePath)})`)}`,
+      `${pc.dim(" 📊 Tamanho:")} ${pc.yellow(formatBytes(sizeBytes))}  │  ` +
+        `${pc.dim("🏷️ Tipo:")} ${pc.magenta(typeInfo.description)}  │  ` +
+        `${pc.dim("📝 Palavras:")} ${pc.yellow(words.toString())}  │  ` +
+        `${pc.dim("⏱️ Leitura:")} ${pc.green(`~${minutes} min`)}`,
+      separator,
+      "",
+      ...lines,
+      pc.dim("─".repeat(width)),
+      ""
+    );
+  } else {
+    output.push(...lines);
   }
 
-  // Reaproveita as linhas já renderizadas em vez de processar o Markdown de novo
-  const { lines, rawText, typeInfo } = await getRenderedFileLines(filePath, options);
-  const fileName = sanitizeTerminalInput(basename(filePath));
-  const displayPath = sanitizeTerminalInput(filePath);
-  const size = formatBytes(file.size);
-  const { words, minutes } = calculateReadingTime(rawText);
+  await writeStdout(output.join("\n") + "\n");
+}
 
-  const width = Math.min(process.stdout.columns || 80, 100);
-  const separator = pc.cyan("─".repeat(width));
-
-  console.log(separator);
-  console.log(`${pc.bold(pc.white(` 📄 ${fileName}`))} ${pc.dim(`(${displayPath})`)}`);
-  console.log(
-    `${pc.dim(" 📊 Tamanho:")} ${pc.yellow(size)}  │  ` +
-      `${pc.dim("🏷️ Tipo:")} ${pc.magenta(typeInfo.description)}  │  ` +
-      `${pc.dim("📝 Palavras:")} ${pc.yellow(words.toString())}  │  ` +
-      `${pc.dim("⏱️ Leitura:")} ${pc.green(`~${minutes} min`)}`
-  );
-  console.log(separator);
-  console.log("");
-
-  for (const line of lines) {
-    console.log(line);
-  }
-
-  console.log(pc.dim("─".repeat(width)) + "\n");
+/** Escreve tudo e espera o esvaziamento (saída grande num pipe não é cortada ao sair). */
+function writeStdout(text: string): Promise<void> {
+  return new Promise((resolve) => {
+    if (process.stdout.write(text)) resolve();
+    else process.stdout.once("drain", () => resolve());
+  });
 }
 
 /**
- * Monitora alterações no arquivo e atualiza a exibição no terminal em tempo real
+ * Mostra o arquivo e o atualiza a cada salvamento. Observa a pasta (não o
+ * arquivo) para continuar funcionando quando o editor salva por substituição
+ * atômica (grava um temporário e renomeia por cima).
  */
-export async function watchFileInTerminal(
-  filePath: string,
-  options?: { raw?: boolean; lineNumbers?: boolean }
-): Promise<void> {
+export async function watchFileInTerminal(filePath: string, options: RenderOptions = {}): Promise<void> {
   const watchedName = basename(filePath).toLowerCase();
   const watchedDirectory = dirname(filePath);
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -439,18 +302,17 @@ export async function watchFileInTerminal(
       renderAgain = true;
       return;
     }
-
     rendering = true;
     try {
       do {
         renderAgain = false;
-        console.clear();
+        if (process.stdout.isTTY) process.stdout.write("\x1B[2J\x1B[3J\x1B[H");
         try {
           await printDirectToTerminal(filePath, options);
         } catch (error) {
           console.error(pc.red(`Erro ao atualizar o arquivo: ${error instanceof Error ? error.message : error}`));
         }
-        console.log(pc.magenta(`👀 Monitorando: ${pc.bold(filePath)} (Pressione Ctrl+C para sair)`));
+        console.log(pc.magenta(`👀 Monitorando: ${pc.bold(sanitizeTerminalInput(filePath))} (Ctrl+C para sair)`));
       } while (renderAgain);
     } finally {
       rendering = false;
@@ -460,7 +322,7 @@ export async function watchFileInTerminal(
   await render();
 
   await new Promise<void>((resolve, reject) => {
-    let watcher: ReturnType<typeof watch>;
+    let watcher: ReturnType<typeof watch> | undefined;
 
     const cleanup = () => {
       if (debounceTimer) clearTimeout(debounceTimer);
@@ -475,17 +337,11 @@ export async function watchFileInTerminal(
     };
 
     try {
-      // Observar a pasta mantém o monitoramento ativo quando editores salvam por
-      // substituição atômica (rename), em vez de alterar o arquivo original.
       watcher = watch(watchedDirectory, (_eventType, changedName) => {
         if (changedName && changedName.toString().toLowerCase() !== watchedName) return;
-
         if (debounceTimer) clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(() => {
-          void render();
-        }, 150);
+        debounceTimer = setTimeout(() => void render(), 150);
       });
-
       watcher.once("error", (error) => {
         cleanup();
         reject(error);
@@ -498,4 +354,3 @@ export async function watchFileInTerminal(
     }
   });
 }
-
