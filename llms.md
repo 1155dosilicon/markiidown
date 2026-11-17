@@ -1,4 +1,4 @@
-# LLMs Context & Architecture Guide: MarkiiDown (v2.0.0)
+# LLMs Context & Architecture Guide: MarkiiDown (v2.0.1)
 
 > Este arquivo fornece contexto técnico arquitetural para Modelos de Linguagem (LLMs) e agentes que precisem manter ou estender a base de código do **MarkiiDown**.
 
@@ -100,7 +100,7 @@ markiidown/
 ## 🔨 Pipeline de Compilação do Executável
 
 ```bash
-bun build --compile --minify --windows-icon=assets/icon.ico --windows-title="MarkiiDown" --windows-description="Visualizador e Editor Universal de Arquivos e Markdown" --windows-publisher="MarkiiDown" --windows-version="2.0.0" --target=bun-windows-x64 ./src/index.ts --outfile ./dist/markiidown.exe
+bun build --compile --minify --windows-icon=assets/icon.ico --windows-title="MarkiiDown" --windows-description="Visualizador e Editor Universal de Arquivos e Markdown" --windows-publisher="MarkiiDown" --windows-version="2.0.1.0" --target=bun-windows-x64 ./src/index.ts --outfile ./dist/markiidown.exe
 ```
 - Produz um executável único e portátil para Windows x64.
 - Não necessita de Bun, Node ou qualquer ferramenta externa instalada no computador de destino.
