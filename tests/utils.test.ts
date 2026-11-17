@@ -175,3 +175,28 @@ describe("formatBytes", () => {
     expect(calculateReadingTime("   ")).toEqual({ words: 0, minutes: 0 });
   });
 });
+
+describe("detecção de binários", () => {
+  test("texto UTF-16 com BOM e sem extensão conhecida não é binário", () => {
+    const directory = mkdtempSync(join(tmpdir(), "markiidown-utf16-"));
+    try {
+      const filePath = join(directory, "saida");
+      writeFileSync(filePath, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from("hello world", "utf16le")]));
+      expect(detectFileType(filePath).isBinary).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("arquivo grande sem extensão é classificado só pela amostra inicial", () => {
+    const directory = mkdtempSync(join(tmpdir(), "markiidown-sample-"));
+    try {
+      const filePath = join(directory, "grande");
+      // Texto nos primeiros 8 KB, binário depois: só a amostra inicial conta
+      writeFileSync(filePath, Buffer.concat([Buffer.alloc(8192, 0x61), Buffer.alloc(1024 * 1024, 0)]));
+      expect(detectFileType(filePath).isBinary).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});

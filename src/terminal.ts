@@ -4,15 +4,26 @@ import { markedTerminal } from "marked-terminal";
 import { watch } from "node:fs";
 import { basename, dirname } from "node:path";
 import pc from "picocolors";
-import { expandTabsAnsi, runInteractiveViewer, stripAnsi } from "./interactive.ts";
+import { expandTabsAnsi, stripAnsi } from "./ansi.ts";
+import { runInteractiveViewer } from "./interactive.ts";
+import { readTextFile } from "./text-file.ts";
 import {
   calculateReadingTime,
   detectFileType,
+  extractCodeSymbol,
   formatBytes,
-  isMarkdownPath,
   resolveHighlightLanguage,
   type FileTypeInfo,
 } from "./utils.ts";
+
+/**
+ * Marca as linhas de blocos de código renderizados para que o sumário não
+ * confunda comentários (`# instala dependências` em bash/python) com
+ * cabeçalhos. É um caractere de controle C1: sanitizeTerminalInput remove
+ * toda a faixa U+0080–U+009F do documento, então ele só pode vir do próprio
+ * renderizador, e é retirado antes de qualquer saída.
+ */
+const CODE_LINE_MARKER = "\u0090";
 
 const SGR_SEQUENCE_AT_START = /^\x1B\[([0-9;]*)m/;
 const LONG_CLI_OPTION = /(?<![\w-])--[A-Za-z0-9][A-Za-z0-9-]*(?:=[^\s"'`)<>{}\]]+)?/g;
@@ -108,7 +119,7 @@ function renderCodeBlock(code: string, language?: string): string {
   return (
     renderedCode
       .split("\n")
-      .map((line) => indentation + line)
+      .map((line) => CODE_LINE_MARKER + indentation + line)
       .join("\n") + "\n\n"
   );
 }
@@ -176,6 +187,8 @@ function addLineNumberGutter(lines: string[]): string[] {
 
 export interface RenderedFileResult {
   lines: string[];
+  /** Texto de cada linha sem cores nem numeração, usado pela busca. */
+  searchLines: string[];
   tableOfContents: { title: string; lineIndex: number }[];
   rawText: string;
   sizeBytes: number;
@@ -211,6 +224,7 @@ export async function getRenderedFileLines(
     ];
     return {
       lines,
+      searchLines: lines.map(stripAnsi),
       tableOfContents: [],
       rawText: "[Binary Content]",
       sizeBytes,
@@ -218,16 +232,23 @@ export async function getRenderedFileLines(
     };
   }
 
-  const rawText = await file.text();
+  // Respeita a codificação do arquivo (UTF-8, UTF-16 com BOM, Windows-1252)
+  const { text: rawText } = await readTextFile(filePath);
 
   // 2. Se for Markdown e não estiver em modo --raw
   if (typeInfo.type === "markdown" && !options?.raw) {
     const renderedText = (await createTerminalMarked().parse(sanitizeTerminalInput(rawText))) as string;
-    const renderedLines = renderedText.split(/\r?\n/).map((line) => expandTabsAnsi(line));
+    const codeLines = new Set<number>();
+    const renderedLines = renderedText.split(/\r?\n/).map((line, index) => {
+      if (!line.includes(CODE_LINE_MARKER)) return expandTabsAnsi(line);
+      codeLines.add(index);
+      return expandTabsAnsi(line.replaceAll(CODE_LINE_MARKER, ""));
+    });
 
-    // Mapeia cabeçalhos para o Sumário
+    // Mapeia cabeçalhos para o Sumário (linhas de blocos de código não contam)
     const tableOfContents: { title: string; lineIndex: number }[] = [];
     renderedLines.forEach((line, index) => {
+      if (codeLines.has(index)) return;
       const plain = stripAnsi(line).trim();
       if (/^#{1,6}\s+/.test(plain)) {
         tableOfContents.push({
@@ -242,6 +263,7 @@ export async function getRenderedFileLines(
 
     return {
       lines,
+      searchLines: renderedLines.map(stripAnsi),
       tableOfContents,
       rawText,
       sizeBytes,
@@ -258,8 +280,6 @@ export async function getRenderedFileLines(
   const tableOfContents: { title: string; lineIndex: number }[] = [];
 
   // Mapeia símbolos de código (funções, classes, interfaces, structs, seções) para o sumário
-  const codeSymbolRegex =
-    /^(?:export\s+)?(?:async\s+)?(?:pub(?:\([^)]*\))?\s+)?(?:function|func|fn|def|class|struct|interface|type|enum|trait|impl|const)\s+([A-Za-z0-9_$]+)/i;
   const sectionCommentRegex = /^(?:\/\/|#|\/\*|--)\s*(?:\[|\bREGION\b|\bSECTION\b|\bMARK\b|#+)\s*(.*)/i;
 
   let highlightedText = safeRawText;
@@ -278,21 +298,20 @@ export async function getRenderedFileLines(
 
   const highlightedLines = highlightedText.split(/\r?\n/);
   const lines: string[] = [];
+  const searchLines: string[] = [];
 
   for (let i = 0; i < highlightedLines.length; i++) {
     const rawLine = rawLines[i] ?? "";
     const lineNumStr = String(i + 1).padStart(totalDigits, " ");
     const gutter = showGutter ? pc.dim(lineNumStr) + pc.cyan(" │ ") : "";
     lines.push(gutter + (highlightedLines[i] ?? ""));
+    searchLines.push(stripAnsi(highlightedLines[i] ?? ""));
 
     // Extrai símbolos para o Sumário
     const trimmed = rawLine.trim();
-    const symbolMatch = trimmed.match(codeSymbolRegex);
-    if (symbolMatch && symbolMatch[1]) {
-      tableOfContents.push({
-        title: `${symbolMatch[0].split(/\s+/)[0]} ${symbolMatch[1]}`,
-        lineIndex: i,
-      });
+    const symbol = extractCodeSymbol(rawLine);
+    if (symbol) {
+      tableOfContents.push({ title: symbol, lineIndex: i });
     } else {
       const sectionMatch = trimmed.match(sectionCommentRegex);
       if (sectionMatch && sectionMatch[1]) {
@@ -306,6 +325,7 @@ export async function getRenderedFileLines(
 
   return {
     lines,
+    searchLines,
     tableOfContents,
     rawText,
     sizeBytes,
@@ -342,6 +362,7 @@ export async function openInteractiveViewer(
     const res = await getRenderedFileLines(filePath, options);
     return {
       renderedLines: res.lines,
+      searchLines: res.searchLines,
       tableOfContents: res.tableOfContents,
       fileSize: res.sizeBytes,
     };
@@ -354,6 +375,7 @@ export async function openInteractiveViewer(
     filePath,
     fileSize: initial.fileSize,
     renderedLines: initial.renderedLines,
+    searchLines: initial.searchLines,
     tableOfContents: initial.tableOfContents,
     onReload: loadData,
   });

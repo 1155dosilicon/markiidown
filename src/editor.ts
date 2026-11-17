@@ -1,5 +1,14 @@
 import readline from "node:readline";
 import pc from "picocolors";
+import { padToWidth, stripAnsi, truncateAnsi } from "./ansi.ts";
+import {
+  ENCODING_LABELS,
+  encodeText,
+  hasMixedLineEndings,
+  readTextFile,
+  UnrepresentableTextError,
+  type TextEncodingName,
+} from "./text-file.ts";
 import { detectFileType, TAB_SIZE } from "./utils.ts";
 
 export interface EditorResult {
@@ -12,60 +21,7 @@ export interface EditorOptions {
   initialContent?: string;
 }
 
-/**
- * Utilitário para calcular largura visual sem sequências ANSI
- */
-const ANSI_SEQUENCE = /\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g;
-const ANSI_SEQUENCE_AT_START = /^(?:\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)))/;
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-
-function stripAnsi(text: string): string {
-  return text.replace(ANSI_SEQUENCE, "");
-}
-
-function truncateAnsi(str: string, maxWidth: number): string {
-  if (maxWidth <= 0) return "";
-
-  let visualWidth = 0;
-  let result = "";
-  let offset = 0;
-  let truncated = false;
-
-  while (offset < str.length) {
-    const remaining = str.slice(offset);
-    const ansiMatch = remaining.match(ANSI_SEQUENCE_AT_START);
-    if (ansiMatch) {
-      result += ansiMatch[0];
-      offset += ansiMatch[0].length;
-      continue;
-    }
-
-    const segment = graphemeSegmenter.segment(remaining)[Symbol.iterator]().next().value?.segment;
-    if (!segment) break;
-
-    const segmentWidth = Bun.stringWidth(segment);
-    if (visualWidth + segmentWidth > maxWidth) {
-      truncated = true;
-      break;
-    }
-
-    result += segment;
-    visualWidth += segmentWidth;
-    offset += segment.length;
-  }
-
-  if (truncated && result.includes("\x1B[")) {
-    result += "\x1B[0m";
-  }
-
-  return result;
-}
-
-function padToWidth(text: string, width: number): string {
-  const truncated = truncateAnsi(text, width);
-  const missingWidth = Math.max(0, width - Bun.stringWidth(stripAnsi(truncated)));
-  return truncated + " ".repeat(missingWidth);
-}
 
 /**
  * Mantém a quebra de linha original do arquivo (CRLF no Windows) ao salvar
@@ -78,9 +34,13 @@ export function detectLineEnding(content: string): "\r\n" | "\n" {
  * O cursor do editor é um índice na string (unidades UTF-16), mas a tela usa
  * colunas visuais: TAB avança até a próxima parada e emoji/CJK ocupam 2
  * colunas. As funções abaixo convertem entre as duas medidas.
+ *
+ * O segmentador é percorrido de forma preguiçosa: as funções param assim que
+ * chegam à coluna/índice pedido, sem segmentar a linha inteira (linhas muito
+ * longas deixavam cada tecla lenta).
  */
-function graphemes(text: string): string[] {
-  return Array.from(graphemeSegmenter.segment(text), (part) => part.segment);
+function* graphemes(text: string): Generator<string> {
+  for (const part of graphemeSegmenter.segment(text)) yield part.segment;
 }
 
 function graphemeWidth(segment: string, column: number): number {
@@ -168,13 +128,17 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
 
   let rawContent = options.initialContent;
   let isNewFile = false;
+  // Arquivos existentes são salvos na mesma codificação em que foram lidos
+  let encoding: TextEncodingName = "utf-8";
   if (rawContent === undefined) {
     if (await file.exists()) {
       // Carregar um binário como texto e salvar corromperia o arquivo
       if (typeInfo.isBinary) {
         throw new Error(`Arquivos binários não podem ser editados: ${filePath}`);
       }
-      rawContent = await file.text();
+      const decoded = await readTextFile(filePath);
+      rawContent = decoded.text;
+      encoding = decoded.encoding;
     } else {
       rawContent = "";
       isNewFile = true;
@@ -182,6 +146,7 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
   }
 
   const lineEnding = detectLineEnding(rawContent);
+  const mixedLineEndings = hasMixedLineEndings(rawContent);
 
   // Normaliza quebras de linha em array de linhas
   let lines = rawContent.split(/\r?\n/);
@@ -199,6 +164,8 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
   let wasSaved = false;
   let statusMessage: string | null = isNewFile
     ? "📄 Novo arquivo [Pressione Ctrl+S para salvar no disco]"
+    : mixedLineEndings
+    ? pc.yellow(`⚠️ O arquivo mistura finais de linha; ao salvar, todos viram ${lineEnding === "\r\n" ? "CRLF" : "LF"}.`)
     : null;
   let statusTimeout: ReturnType<typeof setTimeout> | null = null;
   let confirmingExit = false;
@@ -254,10 +221,22 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
   async function saveFile(): Promise<boolean> {
     try {
       const contentToSave = lines.join(lineEnding);
-      await Bun.write(filePath, contentToSave);
+      let bytes: Uint8Array;
+      let message = pc.green("💾 Arquivo salvo com sucesso!");
+      try {
+        bytes = encodeText(contentToSave, encoding);
+      } catch (error) {
+        if (!(error instanceof UnrepresentableTextError)) throw error;
+        // Gravar "?" no lugar do caractere perderia texto: muda para UTF-8 e avisa
+        const previous = ENCODING_LABELS[encoding];
+        encoding = "utf-8";
+        bytes = encodeText(contentToSave, encoding);
+        message = pc.yellow(`💾 Salvo em UTF-8: "${error.character}" não existe em ${previous}.`);
+      }
+      await Bun.write(filePath, bytes);
       isModified = false;
       wasSaved = true;
-      setStatus(pc.green("💾 Arquivo salvo com sucesso!"));
+      setStatus(message, 5000);
       return true;
     } catch (err) {
       setStatus(pc.red(`❌ Erro ao salvar: ${err instanceof Error ? err.message : String(err)}`), 5000);
@@ -292,7 +271,8 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
     // 1. Cabeçalho (Linha 1)
     buffer += `\x1B[1;1H\x1B[2K`;
     const dirtyIndicator = isModified ? pc.yellow("● [Modificado]") : pc.green("○ [Salvo]");
-    const leftHeader = ` 📝 MarkiiDown Editor │ ${pc.bold(fileName)}  ${dirtyIndicator} (${typeInfo.description}) `;
+    const encodingLabel = encoding === "utf-8" ? "" : ` · ${ENCODING_LABELS[encoding]}`;
+    const leftHeader = ` 📝 MarkiiDown Editor │ ${pc.bold(fileName)}  ${dirtyIndicator} (${typeInfo.description}${encodingLabel}) `;
     const rightHeader = ` Ln ${cursorRow + 1}/${lines.length}, Col ${cursorDisplayCol + 1} `;
 
     const leftLen = Bun.stringWidth(stripAnsi(leftHeader));
@@ -389,11 +369,27 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
   process.stdout.on("resize", handleResize);
 
   return new Promise<EditorResult>((resolvePromise) => {
+    let finished = false;
     const finish = (saved: boolean, modified: boolean) => {
+      finished = true;
       cleanup();
       process.stdout.removeListener("resize", handleResize);
-      process.stdin.removeListener("keypress", handleKeypress);
+      process.stdin.removeListener("keypress", enqueueKeypress);
       resolvePromise({ saved, modified });
+    };
+
+    // As teclas são tratadas uma de cada vez, em ordem. Sem a fila, uma tecla
+    // digitada durante o salvamento era processada no meio dele: o texto novo
+    // ficava marcado como salvo (e se perdia ao sair) ou era descartado pelo
+    // "Salvar e Sair".
+    let keyQueue: Promise<void> = Promise.resolve();
+    const enqueueKeypress = (str: string, key: readline.Key) => {
+      keyQueue = keyQueue
+        .then(() => (finished ? undefined : handleKeypress(str, key)))
+        .catch((error) => {
+          setStatus(pc.red(`❌ Erro: ${error instanceof Error ? error.message : String(error)}`), 5000);
+          render();
+        });
     };
 
     const handleKeypress = async (str: string, key: readline.Key) => {
@@ -652,6 +648,6 @@ export async function runInteractiveEditor(options: EditorOptions): Promise<Edit
       }
     };
 
-    process.stdin.on("keypress", handleKeypress);
+    process.stdin.on("keypress", enqueueKeypress);
   });
 }

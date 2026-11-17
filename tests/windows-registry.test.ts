@@ -3,6 +3,8 @@ import {
   buildKeysToDelete,
   buildRegisterCommands,
   formatIconValue,
+  isRegKeyEmpty,
+  isUsableBackupValue,
   LEGACY_FOLDER_MENU_KEYS,
   MARKIIDOWN_BACKUP_KEY,
   MARKIIDOWN_DOCUMENT_CLASS,
@@ -112,6 +114,42 @@ describe("reg output parsers", () => {
     const output = "HKEY_CURRENT_USER\\Software\\Classes\\.md\r\n    (Default)    REG_SZ    MarkiiDown.Document\r\n";
     expect(parseRegDefaultValue(output)).toBe("MarkiiDown.Document");
     expect(parseRegDefaultValue("HKEY_CURRENT_USER\\Software\\Classes\\X\r\n")).toBeNull();
+  });
+
+  test("parseRegDefaultValue reconhece o valor padrão em qualquer idioma do Windows", () => {
+    for (const name of ["(Default)", "(padrão)", "(Predeterminado)", "(Standard)", "(par défaut)"]) {
+      const output = `\r\nHKEY_CURRENT_USER\\Software\\Classes\\.md\r\n    Foo    REG_SZ    bar\r\n    ${name}    REG_SZ    MarkiiDown.Document\r\n\r\nHKEY_CURRENT_USER\\Software\\Classes\\.md\\ShellNew\r\n`;
+      expect(parseRegDefaultValue(output)).toBe("MarkiiDown.Document");
+    }
+  });
+
+  test("parseRegDefaultValue: valor padrão inexistente não é listado sem /ve, e vazio vira string vazia", () => {
+    // Saída real de `reg query` (sem /ve) numa chave sem valor padrão
+    expect(parseRegDefaultValue("\r\nHKEY_CURRENT_USER\\Software\\X\r\n    Foo    REG_SZ    bar\r\n\r\n")).toBeNull();
+    expect(parseRegDefaultValue("\r\nHKEY_CURRENT_USER\\Software\\X\r\n    (padrão)    REG_SZ    \r\n\r\n")).toBe("");
+  });
+
+  test("isUsableBackupValue descarta textos traduzidos de 'valor não definido' e a própria classe", () => {
+    expect(isUsableBackupValue("VSCode.md")).toBe(true);
+    expect(isUsableBackupValue("(value not set)")).toBe(false);
+    expect(isUsableBackupValue("(valor não definido)")).toBe(false);
+    expect(isUsableBackupValue(MARKIIDOWN_DOCUMENT_CLASS)).toBe(false);
+    expect(isUsableBackupValue("")).toBe(false);
+    expect(isUsableBackupValue(null)).toBe(false);
+  });
+
+  test("isRegKeyEmpty só considera vazia a chave sem valores e sem subchaves", () => {
+    expect(isRegKeyEmpty("")).toBe(true);
+    expect(isRegKeyEmpty("\r\nHKEY_CURRENT_USER\\Software\\Classes\\.md\r\n\r\n")).toBe(true);
+    expect(isRegKeyEmpty("\r\nHKEY_CURRENT_USER\\Software\\Classes\\.md\r\n    Content Type    REG_SZ    text/markdown\r\n")).toBe(false);
+    expect(
+      isRegKeyEmpty("\r\nHKEY_CURRENT_USER\\Software\\Classes\\.md\r\n\r\nHKEY_CURRENT_USER\\Software\\Classes\\.md\\OpenWithProgids\r\n")
+    ).toBe(false);
+  });
+
+  test("parseRegSubkeys ignora linhas de valores", () => {
+    const output = "\r\nHKEY_CURRENT_USER\\Software\\Classes\\.md\r\n    (padrão)    REG_SZ    x\r\n\r\nHKEY_CURRENT_USER\\Software\\Classes\\.md\\ShellNew\r\n";
+    expect(parseRegSubkeys(output)).toEqual(["HKEY_CURRENT_USER\\Software\\Classes\\.md\\ShellNew"]);
   });
 
   test("parseRegNamedValue extrai valor nomeado com regex escapado", () => {

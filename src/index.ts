@@ -14,9 +14,9 @@ import {
   resolveNewFileTarget,
   resolveTargetFile,
 } from "./utils.ts";
+import { readTextFile } from "./text-file.ts";
+import { VERSION } from "./version.ts";
 import { registerWindowsContextMenu, unregisterWindowsContextMenu } from "./windows-registry.ts";
-
-const VERSION = "2.0.0";
 
 /**
  * Exibe a mensagem de ajuda detalhada em Português (pt-BR)
@@ -188,8 +188,7 @@ async function main(): Promise<void> {
     if (detectFileType(resolvedPath).isBinary) {
       throw new Error(`Arquivos binários não podem ser exportados para HTML: ${resolvedPath}`);
     }
-    const file = Bun.file(resolvedPath);
-    const rawText = await file.text();
+    const { text: rawText } = await readTextFile(resolvedPath);
     const fullHtml = convertFileToStaticHtml(rawText, resolvedPath);
     const destination = resolve(process.cwd(), options.exportPath!);
     const outputExtension = extname(destination).toLowerCase();

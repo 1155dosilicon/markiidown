@@ -16,6 +16,7 @@ Todas as dependências externas utilizadas possuem licenças permissivas e ampla
 | **`marked-terminal`** | MIT | ✅ 100% Compatível | Permissiva MIT compatível com GPLv3. |
 | **`marked-highlight`** | MIT | ✅ 100% Compatível | Permissiva MIT compatível com GPLv3. |
 | **`highlight.js`** | BSD-3-Clause | ✅ 100% Compatível | A cláusula BSD-3 é oficialmente listada pela Free Software Foundation (FSF) como compatível com a GPL. |
+| **`cli-highlight`** | ISC | ✅ 100% Compatível | Permissiva ISC. Traz consigo o `highlight.js` 10.7.3 (BSD-3-Clause). |
 | **`picocolors`** | ISC | ✅ 100% Compatível | A licença ISC é funcionalmente equivalente à MIT/BSD-2 e compatível com a GPL. |
 | **`Bun` (Runtime)** | MIT / LGPL / Apache 2.0 | ✅ 100% Compatível | A compilação standalone com Bun empacota o runtime que suporta GPLv3 sem violar termos. |
 
@@ -42,7 +43,8 @@ Todas as dependências externas utilizadas possuem licenças permissivas e ampla
 | **`marked`** | `^15.0.7` | Parser de Markdown para nós AST de texto e cabeçalhos. |
 | **`marked-terminal`** | `^7.3.0` | Conversor AST para sequências ANSI de terminal, tabelas com bordas e formatação estilizada. |
 | **`marked-highlight`** | `^2.2.1` | Integração do realce sintático com o pipeline do `marked`. |
-| **`highlight.js`** | `^11.11.1` | Motor de syntax highlighting para blocos de código em TypeScript, Python, JSON, C#, Rust, etc. |
+| **`highlight.js`** | `^11.11.1` | Motor de syntax highlighting da exportação HTML (TypeScript, Python, JSON, C#, Rust, etc.). |
+| **`cli-highlight`** | `^2.1.11` | Realce sintático com cores ANSI no terminal (leitor, `--print` e blocos de código do Markdown). Usa internamente o `highlight.js` 10.7.3, versão sem manutenção; o terminal e o HTML usam, portanto, motores diferentes. |
 | **`picocolors`** | `^1.1.1` | Biblioteca minimalista e sem overhead para cores e formatações ANSI no terminal. |
 
 ---

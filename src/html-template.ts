@@ -2,7 +2,13 @@ import { Marked, Renderer, TextRenderer } from "marked";
 import { markedHighlight } from "marked-highlight";
 import hljs from "highlight.js";
 import { basename } from "node:path";
-import { calculateReadingTime, detectFileType, formatBytes, resolveHighlightLanguage } from "./utils.ts";
+import {
+  calculateReadingTime,
+  detectFileType,
+  extractCodeSymbol,
+  formatBytes,
+  resolveHighlightLanguage,
+} from "./utils.ts";
 
 const isHljsLanguage = (name: string) => !!hljs.getLanguage(name);
 
@@ -19,11 +25,16 @@ htmlMarked.use(
   })
 );
 
-function slugify(text: string): string {
+/**
+ * Gera o id do cabeçalho. Mantém letras de qualquer alfabeto: com `\w`
+ * (só ASCII), "Instalação" virava "instalao" e títulos em outros alfabetos
+ * ficavam vazios.
+ */
+export function slugify(text: string): string {
   return text
     .toLowerCase()
     .trim()
-    .replace(/[^\w\s-]/g, "")
+    .replace(/[^\p{L}\p{M}\p{N}_\s-]/gu, "")
     .replace(/[\s_-]+/g, "-")
     .replace(/^-+|-+$/g, "");
 }
@@ -96,20 +107,11 @@ export function convertFileToStaticHtml(rawText: string, filePath: string): stri
   const totalDigits = Math.max(2, String(lines.length).length);
   const toc: { id: string; text: string; level: number }[] = [];
 
-  const codeSymbolRegex =
-    /^(?:export\s+)?(?:async\s+)?(?:pub(?:\([^)]*\))?\s+)?(?:function|func|fn|def|class|struct|interface|type|enum|trait|impl|const)\s+([A-Za-z0-9_$]+)/i;
-
   lines.forEach((line, index) => {
-    const trimmed = line.trim();
-    const symbolMatch = trimmed.match(codeSymbolRegex);
-    if (symbolMatch && symbolMatch[1]) {
+    const symbol = extractCodeSymbol(line);
+    if (symbol) {
       // Aponta para o id da própria linha de código (id="L{n}")
-      const id = `L${index + 1}`;
-      toc.push({
-        id,
-        text: escapeHtml(`${symbolMatch[0].split(/\s+/)[0]} ${symbolMatch[1]}`),
-        level: 1,
-      });
+      toc.push({ id: `L${index + 1}`, text: escapeHtml(symbol), level: 1 });
     }
   });
 

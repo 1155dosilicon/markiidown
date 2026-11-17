@@ -1,8 +1,9 @@
 import { copyFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, win32 } from "node:path";
 import pc from "picocolors";
-import { registerWindowsContextMenu, unregisterWindowsContextMenu } from "./windows-registry.ts";
+import { toWindowsFileVersion } from "./version.ts";
+import { parseRegNamedValue, registerWindowsContextMenu, unregisterWindowsContextMenu } from "./windows-registry.ts";
 
 /**
  * Retorna o diretório de instalação do usuário (%LOCALAPPDATA%\MarkiiDown ou ~/.markiidown/bin)
@@ -66,7 +67,7 @@ async function installExecutable(targetExe: string): Promise<boolean> {
           "--windows-title=MarkiiDown",
           "--windows-description=Leitor e Editor Universal de Arquivos e Markdown",
           "--windows-publisher=MarkiiDown",
-          "--windows-version=2.0.0.0"
+          `--windows-version=${toWindowsFileVersion()}`
         );
       }
       buildArgs.push(entryPoint, "--outfile", targetExe);
@@ -112,38 +113,98 @@ async function installExecutable(targetExe: string): Promise<boolean> {
 }
 
 /**
+ * Acrescenta o diretório ao PATH, sem duplicar. Retorna null quando ele já
+ * está presente (nada a gravar). Função pura (testável no Linux).
+ */
+export function appendPathEntry(currentPath: string, dirToAdd: string): string | null {
+  const normalizedDir = normalizePathForComparison(dirToAdd);
+  const entries = currentPath.split(";");
+  if (entries.some((entry) => entry.trim() && normalizePathForComparison(entry) === normalizedDir)) {
+    return null;
+  }
+  if (!currentPath) return dirToAdd;
+  // Mantém o ";" final, se havia: a remoção deixa o PATH idêntico ao original
+  return currentPath.endsWith(";") ? `${currentPath}${dirToAdd};` : `${currentPath};${dirToAdd}`;
+}
+
+/**
+ * Remove o diretório do PATH. Retorna null quando ele não está presente.
+ * As demais entradas ficam exatamente como estavam (inclusive `;;` vazios e
+ * variáveis como `%USERPROFILE%`). Função pura (testável no Linux).
+ */
+export function removePathEntry(currentPath: string, dirToRemove: string): string | null {
+  const normalizedDir = normalizePathForComparison(dirToRemove);
+  const entries = currentPath.split(";");
+  const kept = entries.filter((entry) => !entry.trim() || normalizePathForComparison(entry) !== normalizedDir);
+  return kept.length === entries.length ? null : kept.join(";");
+}
+
+/** Lê o PATH do usuário (HKCU). Retorna "" se ele não existe e null em erro. */
+async function readUserPathWindows(): Promise<string | null> {
+  const queryProc = Bun.spawn(["reg", "query", "HKCU\\Environment", "/v", "Path"], {
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  const [output, exitCode] = await Promise.all([new Response(queryProc.stdout).text(), queryProc.exited]);
+  if (exitCode !== 0) {
+    // Código 1 = valor inexistente; confirma que a chave em si é legível
+    const keyProc = Bun.spawn(["reg", "query", "HKCU\\Environment"], { stdout: "ignore", stderr: "ignore" });
+    return (await keyProc.exited) === 0 ? "" : null;
+  }
+  return parseRegNamedValue(output, "Path") ?? "";
+}
+
+async function writeUserPathWindows(newPath: string): Promise<boolean> {
+  const setProc = Bun.spawn(
+    ["reg", "add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ", "/d", newPath, "/f"],
+    { stdout: "ignore", stderr: "ignore" }
+  );
+  if ((await setProc.exited) !== 0) return false;
+  await broadcastEnvironmentChange();
+  return true;
+}
+
+/**
+ * Avisa o Windows (WM_SETTINGCHANGE "Environment") que o PATH mudou.
+ * O `reg add` grava o Registro mas não avisa ninguém: o Explorer continuava
+ * com o PATH antigo e os terminais abertos por ele não achavam `markiidown`
+ * até sair e entrar de novo no Windows. É o mesmo aviso que o painel
+ * "Variáveis de Ambiente" e o `setx` enviam.
+ */
+async function broadcastEnvironmentChange(): Promise<void> {
+  if (process.platform !== "win32") return;
+  try {
+    const { dlopen, FFIType } = await import("bun:ffi");
+    const user32 = dlopen("user32.dll", {
+      SendMessageTimeoutW: {
+        args: [FFIType.u64, FFIType.u32, FFIType.u64, FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.ptr],
+        returns: FFIType.i64,
+      },
+    });
+    try {
+      const HWND_BROADCAST = 0xffff;
+      const WM_SETTINGCHANGE = 0x001a;
+      const SMTO_ABORTIFHUNG = 0x0002;
+      const area = Buffer.from("Environment\0", "utf16le");
+      const result = new BigUint64Array(1);
+      user32.symbols.SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, area, SMTO_ABORTIFHUNG, 5000, result);
+    } finally {
+      user32.close();
+    }
+  } catch {
+    // Sem o aviso o PATH só vale após novo login; não é motivo para falhar
+  }
+}
+
+/**
  * Adiciona um diretório ao PATH do usuário no Windows (HKCU\Environment\Path) sem privilégios de Administrador
  */
 async function addUserPathWindows(dirToAdd: string): Promise<boolean> {
   try {
-    // 1. Obtém o PATH atual do usuário em HKCU
-    const queryProc = Bun.spawn(
-      ["reg", "query", "HKCU\\Environment", "/v", "Path"],
-      { stdout: "pipe", stderr: "ignore" }
-    );
-    const queryOutput = await new Response(queryProc.stdout).text();
-    let currentPath = "";
-
-    const match = queryOutput.match(/Path\s+REG_(?:SZ|EXPAND_SZ)\s+(.*)/i);
-    if (match && match[1]) {
-      currentPath = match[1].trim();
-    }
-
-    // Se já estiver no PATH, não adiciona novamente
-    const paths = currentPath.split(";").map((p) => p.trim()).filter(Boolean);
-    const normalizedDir = normalizePathForComparison(dirToAdd);
-
-    if (paths.some((p) => normalizePathForComparison(p) === normalizedDir)) {
-      return true;
-    }
-
-    // 2. Adiciona o novo diretório ao PATH do usuário
-    const newPath = currentPath ? `${currentPath};${dirToAdd}` : dirToAdd;
-    const addProc = Bun.spawn(
-      ["reg", "add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ", "/d", newPath, "/f"],
-      { stdout: "ignore", stderr: "ignore" }
-    );
-    return (await addProc.exited) === 0;
+    const currentPath = await readUserPathWindows();
+    if (currentPath === null) return false;
+    const newPath = appendPathEntry(currentPath, dirToAdd);
+    return newPath === null ? true : await writeUserPathWindows(newPath);
   } catch {
     return false;
   }
@@ -154,26 +215,10 @@ async function addUserPathWindows(dirToAdd: string): Promise<boolean> {
  */
 async function removeUserPathWindows(dirToRemove: string): Promise<boolean> {
   try {
-    const queryProc = Bun.spawn(
-      ["reg", "query", "HKCU\\Environment", "/v", "Path"],
-      { stdout: "pipe", stderr: "ignore" }
-    );
-    const queryOutput = await new Response(queryProc.stdout).text();
-    const match = queryOutput.match(/Path\s+REG_(?:SZ|EXPAND_SZ)\s+(.*)/i);
-    if (!match || !match[1]) return true;
-
-    const currentPath = match[1].trim();
-    const paths = currentPath.split(";").map((p) => p.trim()).filter(Boolean);
-    const normalizedDir = normalizePathForComparison(dirToRemove);
-
-    const filtered = paths.filter((p) => normalizePathForComparison(p) !== normalizedDir);
-    const newPath = filtered.join(";");
-
-    const setProc = Bun.spawn(
-      ["reg", "add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ", "/d", newPath, "/f"],
-      { stdout: "ignore", stderr: "ignore" }
-    );
-    return (await setProc.exited) === 0;
+    const currentPath = await readUserPathWindows();
+    if (currentPath === null) return false;
+    const newPath = removePathEntry(currentPath, dirToRemove);
+    return newPath === null ? true : await writeUserPathWindows(newPath);
   } catch {
     return false;
   }
@@ -247,6 +292,69 @@ export async function installMarkiiDown(): Promise<boolean> {
 }
 
 /**
+ * Script PowerShell que apaga a pasta de instalação depois que o MarkiiDown
+ * fecha. Tenta por até ~15 s, porque o .exe só é liberado pelo Windows
+ * alguns instantes após o processo terminar. O caminho chega pela variável
+ * de ambiente, nunca interpolado no script. Função pura (testável).
+ */
+export function buildCleanupScript(): string {
+  return [
+    "Set-Location -LiteralPath $env:TEMP",
+    "$target = $env:MARKIIDOWN_CLEANUP_TARGET",
+    "if (-not $target) { exit 1 }",
+    "for ($i = 0; $i -lt 30; $i++) {",
+    "  Start-Sleep -Milliseconds 500",
+    "  Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue",
+    "  if (-not (Test-Path -LiteralPath $target)) { exit 0 }",
+    "}",
+    "exit 1",
+  ].join("\n");
+}
+
+/**
+ * Agenda a remoção da pasta para depois do encerramento.
+ *
+ * O Bun coloca os processos filhos num Job do Windows que é encerrado junto
+ * com ele: um PowerShell iniciado direto pelo Bun.spawn (mesmo com unref ou
+ * detached) morria antes de apagar qualquer coisa, e a pasta ficava para
+ * trás. `cmd /c start` cria o PowerShell como processo independente, que
+ * sobrevive ao fim do MarkiiDown. O script vai em Base64 (-EncodedCommand)
+ * para não passar pelas regras de aspas do cmd.
+ */
+export async function scheduleDirectoryRemovalAfterExit(targetDir: string): Promise<void> {
+  const encodedScript = Buffer.from(buildCleanupScript(), "utf16le").toString("base64");
+  const launcher = Bun.spawn(
+    [
+      "cmd.exe",
+      "/d",
+      "/c",
+      "start",
+      '""',
+      "/b",
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-WindowStyle",
+      "Hidden",
+      "-EncodedCommand",
+      encodedScript,
+    ],
+    {
+      cwd: tmpdir(),
+      env: { ...process.env, MARKIIDOWN_CLEANUP_TARGET: targetDir },
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+      windowsHide: true,
+    }
+  );
+  // O `start` retorna assim que o PowerShell é criado
+  await launcher.exited;
+}
+
+/**
  * Desinstala o MarkiiDown do sistema do usuário
  */
 export async function uninstallMarkiiDown(): Promise<boolean> {
@@ -276,21 +384,14 @@ export async function uninstallMarkiiDown(): Promise<boolean> {
   try {
     if (existsSync(targetDir)) {
       if (process.platform === "win32" && isPathInside(targetDir, process.execPath)) {
-        const cleanupScript = [
-          "Start-Sleep -Milliseconds 700",
-          "if ($env:MARKIIDOWN_CLEANUP_TARGET) { Remove-Item -LiteralPath $env:MARKIIDOWN_CLEANUP_TARGET -Recurse -Force -ErrorAction SilentlyContinue }",
-        ].join("; ");
-        const cleanupProc = Bun.spawn(
-          ["powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", cleanupScript],
-          {
-            env: { ...process.env, MARKIIDOWN_CLEANUP_TARGET: targetDir },
-            stdin: "ignore",
-            stdout: "ignore",
-            stderr: "ignore",
-            windowsHide: true,
-          }
-        );
-        cleanupProc.unref();
+        // O Windows não deixa apagar a pasta enquanto ela for o diretório
+        // atual de algum terminal
+        if (isPathInside(targetDir, process.cwd())) {
+          console.warn(
+            pc.yellow(`⚠️ O terminal está dentro de ${targetDir}; saia da pasta (cd ..) ou ela não poderá ser apagada.`)
+          );
+        }
+        await scheduleDirectoryRemovalAfterExit(targetDir);
         console.log(pc.green(`✅ Remoção do diretório agendada para após o encerramento: ${targetDir}`));
       } else {
         rmSync(targetDir, { recursive: true, force: true });

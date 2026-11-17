@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import pc from "picocolors";
 
@@ -152,12 +152,37 @@ export function printBanner(): void {
   );
 }
 
+/** Quantidade de bytes do início do arquivo usada para detectar binários. */
+const BINARY_SAMPLE_SIZE = 8192;
+
+/**
+ * Lê só a amostra inicial do arquivo. Antes o arquivo inteiro era carregado
+ * na memória para examinar 8 KB, o que pesava (ou falhava) com arquivos
+ * grandes sem extensão e era repetido para cada arquivo ao abrir uma pasta.
+ */
+function readFileSample(filePath: string): Uint8Array {
+  const fd = openSync(filePath, "r");
+  try {
+    const buffer = new Uint8Array(BINARY_SAMPLE_SIZE);
+    const bytesRead = readSync(fd, buffer, 0, BINARY_SAMPLE_SIZE, 0);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /**
  * Verifica se um buffer representa conteúdo binário (ex: imagens, executáveis, zip)
  */
 export function isBinaryBuffer(buffer: Uint8Array | Buffer): boolean {
-  const checkLength = Math.min(buffer.length, 8192);
+  const checkLength = Math.min(buffer.length, BINARY_SAMPLE_SIZE);
   if (checkLength === 0) return false;
+
+  // Texto UTF-16 com BOM (ex.: saída de `>` no Windows PowerShell 5.1) tem um
+  // byte nulo a cada caractere ASCII, mas não é binário.
+  if (buffer.length >= 2 && ((buffer[0] === 0xff && buffer[1] === 0xfe) || (buffer[0] === 0xfe && buffer[1] === 0xff))) {
+    return false;
+  }
 
   let nonPrintableCount = 0;
   for (let i = 0; i < checkLength; i++) {
@@ -218,8 +243,7 @@ export function detectFileType(filePath: string, sampleBuffer?: Uint8Array | Buf
     try {
       const stats = statSync(filePath);
       if (stats.isFile() && stats.size > 0) {
-        const buffer = readFileSync(filePath);
-        isBinary = isBinaryBuffer(buffer);
+        isBinary = isBinaryBuffer(readFileSample(filePath));
       }
     } catch {}
   }
@@ -241,6 +265,24 @@ export function detectFileType(filePath: string, sampleBuffer?: Uint8Array | Buf
     isBinary: false,
     description: "Text Document",
   };
+}
+
+const CODE_SYMBOL_REGEX =
+  /^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:pub(?:\([^)]*\))?\s+)?(function|func|fn|def|class|struct|interface|type|enum|trait|impl|const)\s+([A-Za-z0-9_$]+)/i;
+
+/**
+ * Extrai o símbolo de uma linha de código para o sumário (ex.: "function foo").
+ * `const` e `type` só contam no nível superior: dentro de funções eles são
+ * variáveis locais e antes inundavam o sumário com cada `const x = ...`.
+ * Retorna null quando a linha não declara um símbolo.
+ */
+export function extractCodeSymbol(line: string): string | null {
+  const match = line.trim().match(CODE_SYMBOL_REGEX);
+  if (!match) return null;
+  const keyword = match[1].toLowerCase();
+  if ((keyword === "const" || keyword === "type") && /^\s/.test(line)) return null;
+  // Usa a palavra-chave ("function foo"), não a primeira palavra da linha ("export foo")
+  return `${match[1]} ${match[2]}`;
 }
 
 /**

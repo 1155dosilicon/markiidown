@@ -1,196 +1,26 @@
 import readline from "node:readline";
 import pc from "picocolors";
+import { padToWidth, stripAnsi, truncateAnsi, wrapAnsi, expandTabsAnsi } from "./ansi.ts";
 import { runInteractiveEditor } from "./editor.ts";
-import { detectFileType, formatBytes, TAB_SIZE } from "./utils.ts";
+import { detectFileType, formatBytes } from "./utils.ts";
+
+// Mantidos como reexportação: testes e outros módulos importam daqui.
+export { expandTabsAnsi, stripAnsi, truncateAnsi, wrapAnsi } from "./ansi.ts";
 
 export interface InteractiveOptions {
   fileName: string;
   filePath: string;
   fileSize: number;
   renderedLines: string[];
+  /** Texto pesquisável de cada linha, sem cores nem numeração (gutter). */
+  searchLines?: string[];
   tableOfContents: { title: string; lineIndex: number }[];
-  onReload?: () => Promise<{ renderedLines: string[]; tableOfContents: { title: string; lineIndex: number }[]; fileSize: number }>;
-}
-
-/**
- * Remove códigos de controle ANSI para calcular tamanho visual real do texto
- */
-const ANSI_SEQUENCE = /\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g;
-const ANSI_SEQUENCE_AT_START = /^(?:\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)))/;
-const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-
-export function stripAnsi(text: string): string {
-  return text.replace(ANSI_SEQUENCE, "");
-}
-
-/**
- * Converte tabulações em espaços até a próxima parada de tabulação, ignorando
- * sequências ANSI. `Bun.stringWidth("\t")` é 0, então sem esta etapa linhas
- * com TAB ultrapassam a largura calculada e quebram o layout do terminal.
- */
-export function expandTabsAnsi(str: string, tabSize = TAB_SIZE): string {
-  if (!str.includes("\t")) return str;
-
-  let result = "";
-  let column = 0;
-  let offset = 0;
-
-  while (offset < str.length) {
-    const remaining = str.slice(offset);
-    const ansiMatch = remaining.match(ANSI_SEQUENCE_AT_START);
-    if (ansiMatch) {
-      result += ansiMatch[0];
-      offset += ansiMatch[0].length;
-      continue;
-    }
-
-    const segment = graphemeSegmenter.segment(remaining)[Symbol.iterator]().next().value?.segment;
-    if (!segment) break;
-
-    if (segment === "\t") {
-      const spaces = tabSize - (column % tabSize);
-      result += " ".repeat(spaces);
-      column += spaces;
-    } else {
-      result += segment;
-      column += Bun.stringWidth(segment);
-    }
-    offset += segment.length;
-  }
-
-  return result;
-}
-
-/**
- * Quebra uma linha em segmentos visuais sem perder texto, sequências ANSI ou
- * grafemas Unicode. Estilos SGR ativos são reaplicados na linha seguinte.
- */
-export function wrapAnsi(str: string, maxWidth: number): string[] {
-  if (maxWidth <= 0 || str.length === 0) return [""];
-
-  const lines: string[] = [];
-  const activeSgr: string[] = [];
-  let currentLine = "";
-  let currentWidth = 0;
-  let offset = 0;
-  let lineHasNonWhitespace = false;
-  let lastBreak: {
-    offset: number;
-    line: string;
-    activeSgr: string[];
-  } | null = null;
-
-  const pushLine = (line = currentLine, styles = activeSgr) => {
-    lines.push(styles.length > 0 ? line + "\x1B[0m" : line);
-    currentLine = activeSgr.join("");
-    currentWidth = 0;
-    lineHasNonWhitespace = false;
-    lastBreak = null;
-  };
-
-  while (offset < str.length) {
-    const remaining = str.slice(offset);
-    const ansiMatch = remaining.match(ANSI_SEQUENCE_AT_START);
-    if (ansiMatch) {
-      const sequence = ansiMatch[0];
-      currentLine += sequence;
-      offset += sequence.length;
-
-      if (/^\x1B\[[0-9;]*m$/.test(sequence)) {
-        const parameters = sequence.slice(2, -1);
-        if (parameters === "" || parameters.split(";").includes("0")) {
-          activeSgr.length = 0;
-        } else {
-          activeSgr.push(sequence);
-        }
-      }
-      continue;
-    }
-
-    const segment = graphemeSegmenter.segment(remaining)[Symbol.iterator]().next().value?.segment;
-    if (!segment) break;
-
-    const segmentWidth = Bun.stringWidth(segment);
-    if (currentWidth > 0 && currentWidth + segmentWidth > maxWidth) {
-      if (lastBreak) {
-        const breakPoint = lastBreak;
-        activeSgr.splice(0, activeSgr.length, ...breakPoint.activeSgr);
-        offset = breakPoint.offset;
-        currentLine = breakPoint.line;
-        pushLine(breakPoint.line, breakPoint.activeSgr);
-        continue;
-      }
-
-      pushLine();
-    }
-
-    currentLine += segment;
-    currentWidth += segmentWidth;
-    offset += segment.length;
-
-    if (/^\s+$/u.test(segment)) {
-      if (lineHasNonWhitespace) {
-        lastBreak = {
-          offset,
-          line: currentLine,
-          activeSgr: [...activeSgr],
-        };
-      }
-    } else {
-      lineHasNonWhitespace = true;
-    }
-  }
-
-  lines.push(currentLine);
-  return lines;
-}
-
-/**
- * Trunca uma string contendo códigos ANSI sem quebrar tags ou ultrapassar a largura da tela
- */
-export function truncateAnsi(str: string, maxWidth: number): string {
-  if (maxWidth <= 0) return "";
-
-  let visualWidth = 0;
-  let result = "";
-  let offset = 0;
-  let truncated = false;
-
-  while (offset < str.length) {
-    const remaining = str.slice(offset);
-    const ansiMatch = remaining.match(ANSI_SEQUENCE_AT_START);
-    if (ansiMatch) {
-      result += ansiMatch[0];
-      offset += ansiMatch[0].length;
-      continue;
-    }
-
-    const segment = graphemeSegmenter.segment(remaining)[Symbol.iterator]().next().value?.segment;
-    if (!segment) break;
-
-    const segmentWidth = Bun.stringWidth(segment);
-    if (visualWidth + segmentWidth > maxWidth) {
-      truncated = true;
-      break;
-    }
-
-    result += segment;
-    visualWidth += segmentWidth;
-    offset += segment.length;
-  }
-
-  // Reseta cores caso tenha sido cortado com cor ativa
-  if (truncated && result.includes("\x1B[")) {
-    result += "\x1B[0m";
-  }
-
-  return result;
-}
-
-function padToWidth(text: string, width: number): string {
-  const truncated = truncateAnsi(text, width);
-  const missingWidth = Math.max(0, width - Bun.stringWidth(stripAnsi(truncated)));
-  return truncated + " ".repeat(missingWidth);
+  onReload?: () => Promise<{
+    renderedLines: string[];
+    searchLines?: string[];
+    tableOfContents: { title: string; lineIndex: number }[];
+    fileSize: number;
+  }>;
 }
 
 /**
@@ -198,7 +28,7 @@ function padToWidth(text: string, width: number): string {
  * quebra visual responsiva, rolagem, busca, sumário e modo editor integrado.
  */
 export async function runInteractiveViewer(options: InteractiveOptions): Promise<void> {
-  let { fileName, filePath, fileSize, renderedLines, tableOfContents } = options;
+  let { fileName, filePath, fileSize, renderedLines, searchLines, tableOfContents } = options;
   const displayFileName = fileName.replace(/[\u0000-\u001F\u007F-\u009F]/g, "");
 
   if (renderedLines.length === 0 || !process.stdout.isTTY || !process.stdin.isTTY) {
@@ -215,6 +45,7 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
   let searchActive = false;
   let searchQuery = "";
   let searchMatches: number[] = [];
+  let searchMatchSet = new Set<number>();
   let currentMatchIndex = 0;
   let showHelpOverlay = false;
   let showTocOverlay = false;
@@ -290,7 +121,7 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
       if (lineIndex < totalLines) {
         const visualLine = visualLines[lineIndex];
         const line = visualLine?.text || "";
-        if (searchQuery && visualLine && searchMatches.includes(visualLine.sourceLineIndex)) {
+        if (searchQuery && visualLine && searchMatchSet.has(visualLine.sourceLineIndex)) {
           const plain = padToWidth(stripAnsi(line), totalCols);
           buffer += pc.bgYellow(pc.black(plain));
         } else {
@@ -413,13 +244,16 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
     if (!searchQuery.trim()) return;
     const cleanQuery = searchQuery.toLowerCase();
 
+    // Pesquisa o texto sem a numeração de linhas: buscar "1" não deve casar
+    // com toda linha cujo número contém 1.
     renderedLines.forEach((line, index) => {
-      const plainText = stripAnsi(line).toLowerCase();
+      const plainText = (searchLines?.[index] ?? stripAnsi(line)).toLowerCase();
       if (plainText.includes(cleanQuery)) {
         searchMatches.push(index);
       }
     });
 
+    searchMatchSet = new Set(searchMatches);
     if (searchMatches.length > 0) {
       currentMatchIndex = 0;
       scrollToLine(searchMatches[0], 2);
@@ -533,6 +367,7 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
           searchActive = false;
           searchQuery = "";
           searchMatches = [];
+          searchMatchSet = new Set();
           renderScreen();
           return;
         }
@@ -541,7 +376,9 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
           renderScreen();
           return;
         }
-        if (str && str.length === 1) {
+        // Aceita qualquer texto imprimível (emoji e caracteres compostos têm
+        // length > 1 em UTF-16), mas não teclas de controle.
+        if (str && !key?.ctrl && !key?.meta && !/[\x00-\x1F\x7F]/.test(str)) {
           searchQuery += str;
           renderScreen();
           return;
@@ -572,6 +409,7 @@ export async function runInteractiveViewer(options: InteractiveOptions): Promise
           try {
             const reloaded = await options.onReload();
             renderedLines = reloaded.renderedLines;
+            searchLines = reloaded.searchLines;
             tableOfContents = reloaded.tableOfContents;
             fileSize = reloaded.fileSize;
             layoutWidth = 0;

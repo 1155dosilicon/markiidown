@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, statSync } from "node:fs";
 import { resolve, join } from "node:path";
 import pc from "picocolors";
 import { formatBytes } from "../src/utils.ts";
+import { toWindowsFileVersion } from "../src/version.ts";
 
 async function buildExecutable(): Promise<void> {
   console.log(pc.cyan("\n=========================================="));
@@ -44,7 +45,7 @@ async function buildExecutable(): Promise<void> {
     "--windows-title=MarkiiDown",
     "--windows-description=Leitor e Editor Universal de Arquivos e Markdown",
     "--windows-publisher=MarkiiDown",
-    "--windows-version=2.0.0.0"
+    `--windows-version=${toWindowsFileVersion()}`
   );
 
   // Executa o comando de compilação do Bun

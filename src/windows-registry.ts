@@ -38,13 +38,34 @@ export function formatIconValue(iconTarget: string): string {
 }
 
 /**
- * Extrai o valor `(Default)` da saída de `reg query <chave> /ve`.
- * Retorna null quando a linha não existe. Função pura (testável no Linux).
+ * Extrai o valor padrão da saída de `reg query <chave>` (SEM `/ve`).
+ *
+ * O nome do valor padrão é traduzido pelo Windows: `(Default)` em inglês,
+ * `(padrão)` em português, `(Predeterminado)` em espanhol... Por isso a linha
+ * é reconhecida pelo formato `(qualquer nome)  REG_TIPO  dado`, nunca pela
+ * palavra. Também não se usa `/ve`: com ele, um valor padrão inexistente
+ * aparece como `(value not set)`/`(valor não definido)`, texto traduzido que
+ * era confundido com um valor real. Sem `/ve`, o valor inexistente
+ * simplesmente não é listado.
+ *
+ * Retorna null quando não há valor padrão. Função pura (testável no Linux).
  */
 export function parseRegDefaultValue(output: string): string | null {
-  const match = output.match(/^[ \t]*\(Default\)[ \t]+REG_\S+[ \t]*(.*)$/mi);
+  const match = output.match(/^[ \t]+\([^)\r\n]*\)[ \t]+REG_[A-Z_]+(?:[ \t]+(.*?))?[ \t]*\r?$/m);
   if (!match) return null;
-  return match[1].trim();
+  return (match[1] ?? "").trim();
+}
+
+/**
+ * Backups gravados por versões anteriores podiam conter o texto traduzido de
+ * "valor não definido" (`(value not set)`, `(valor não definido)`) ou a
+ * própria classe do MarkiiDown. Nenhum dos dois é uma associação válida.
+ * Função pura (testável no Linux).
+ */
+export function isUsableBackupValue(value: string | null): value is string {
+  if (!value) return false;
+  if (value === MARKIIDOWN_DOCUMENT_CLASS) return false;
+  return !/^\(.*\)$/.test(value.trim());
 }
 
 /**
@@ -60,14 +81,14 @@ export function parseRegNamedValue(output: string, valueName: string): string | 
 
 /**
  * Lista as subchaves na saída de `reg query <chave>`
- * (a primeira linha é a própria chave consultada).
- * Função pura (testável no Linux).
+ * (a primeira linha é a própria chave consultada; linhas de valores, que
+ * vêm indentadas, são ignoradas). Função pura (testável no Linux).
  */
 export function parseRegSubkeys(output: string): string[] {
   const lines = output
     .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+    .filter((line) => /^HKEY_/i.test(line))
+    .map((line) => line.trim());
   if (lines.length <= 1) return [];
   return lines.slice(1);
 }
@@ -187,9 +208,11 @@ async function runReg(args: string[]): Promise<{ exitCode: number; stdout: strin
   return { exitCode, stdout, stderr };
 }
 
+/** Valor padrão da chave, ou null se a chave ou o valor não existem (ou é vazio). */
 async function queryRegDefault(key: string): Promise<string | null> {
   try {
-    const { exitCode, stdout } = await runReg(["reg", "query", key, "/ve"]);
+    // Sem /ve: veja parseRegDefaultValue
+    const { exitCode, stdout } = await runReg(["reg", "query", key]);
     if (exitCode !== 0) return null;
     const value = parseRegDefaultValue(stdout);
     return value === "" || value === null ? null : value;
@@ -233,8 +256,7 @@ async function restoreExtensionAssociation(extension: string): Promise<boolean> 
     const result = await runReg(["reg", "query", MARKIIDOWN_BACKUP_KEY, "/v", extension]);
     if (result.exitCode === 0) {
       const parsed = parseRegNamedValue(result.stdout, extension);
-      // Backups gravados por versões antigas podem conter a própria classe do MarkiiDown
-      backup = parsed === "" || parsed === MARKIIDOWN_DOCUMENT_CLASS ? null : parsed;
+      backup = isUsableBackupValue(parsed) ? parsed : null;
     }
   } catch {}
 
@@ -243,7 +265,24 @@ async function restoreExtensionAssociation(extension: string): Promise<boolean> 
     return result.exitCode === 0;
   }
   const result = await runReg(["reg", "delete", classesKey, "/ve", "/f"]);
-  return result.exitCode === 0;
+  if (result.exitCode !== 0) return false;
+
+  // Sem backup, a chave da extensão foi criada pela instalação: se ficou
+  // vazia (sem valores nem subchaves), é apagada para não deixar resto
+  const remaining = await runReg(["reg", "query", classesKey]);
+  if (remaining.exitCode === 0 && isRegKeyEmpty(remaining.stdout)) {
+    await runReg(["reg", "delete", classesKey, "/f"]);
+  }
+  return true;
+}
+
+/**
+ * Indica se a saída de `reg query <chave>` não lista valores nem subchaves.
+ * Função pura (testável no Linux).
+ */
+export function isRegKeyEmpty(output: string): boolean {
+  const hasValue = /^[ \t]+\S.*?[ \t]+REG_[A-Z_]+/m.test(output);
+  return !hasValue && parseRegSubkeys(output).length === 0;
 }
 
 /**
@@ -258,7 +297,7 @@ async function findMarkiiDownApplicationKeys(): Promise<string[]> {
     if (list.exitCode !== 0) return found;
     for (const subkey of parseRegSubkeys(list.stdout)) {
       try {
-        const cmd = await runReg(["reg", "query", `${subkey}\\shell\\open\\command`, "/ve"]);
+        const cmd = await runReg(["reg", "query", `${subkey}\\shell\\open\\command`]);
         if (cmd.exitCode !== 0) continue;
         const command = parseRegDefaultValue(cmd.stdout);
         if (command && command.toLowerCase().includes("markiidown")) {
@@ -366,17 +405,22 @@ export async function unregisterWindowsContextMenu(): Promise<boolean> {
 
   // 1. Restaura as associações anteriores (antes de apagar os backups)
   let success = true;
+  let restoredAll = true;
   for (const extension of MANAGED_EXTENSIONS) {
     if (!(await restoreExtensionAssociation(extension))) {
       success = false;
+      restoredAll = false;
       console.warn(pc.yellow(`⚠️ Não foi possível restaurar a associação anterior de ${extension}.`));
     }
   }
 
   // 2. Apaga as chaves criadas pela integração, incluindo restos de
-  // instalações com o executável renomeado e a chave de backups
+  // instalações com o executável renomeado e a chave de backups. Se alguma
+  // restauração falhou, os backups ficam para uma nova tentativa.
   const sweptKeys = await findMarkiiDownApplicationKeys();
-  const keysToDelete = [...new Set([...buildKeysToDelete([LEGACY_APP_KEY_NAME]), ...sweptKeys])];
+  const keysToDelete = [...new Set([...buildKeysToDelete([LEGACY_APP_KEY_NAME]), ...sweptKeys])].filter(
+    (key) => restoredAll || key !== MARKIIDOWN_SOFTWARE_KEY
+  );
 
   for (const key of keysToDelete) {
     const queryProc = Bun.spawn(["reg", "query", key], { stdout: "ignore", stderr: "ignore" });

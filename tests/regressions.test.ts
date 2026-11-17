@@ -179,3 +179,75 @@ describe("integração com Windows", () => {
     expect(fixWindowsTrailingQuote('C:"', "linux")).toBe('C:"');
   });
 });
+
+describe("leitor: sumário e busca", () => {
+  test("comentários dentro de blocos de código não entram no sumário do Markdown", async () => {
+    const filePath = join(createTempDir(), "doc.md");
+    writeFileSync(
+      filePath,
+      "# Título\n\n```bash\n# instala dependências\nnpm i\n```\n\n- item\n\n  ```python\n  # comentário em lista\n  ```\n\n## Seção\n"
+    );
+    const result = await getRenderedFileLines(filePath);
+
+    expect(result.tableOfContents.map((item) => item.title)).toEqual(["Título", "Seção"]);
+    // O marcador interno dos blocos de código nunca chega à tela
+    expect(result.lines.some((line) => /[\u0080-\u009F]/.test(line))).toBe(false);
+    expect(result.lines.map(stripAnsi).some((line) => line.includes("# instala dependências"))).toBe(true);
+  });
+
+  test("a busca não enxerga a numeração de linhas dos arquivos de código", async () => {
+    const filePath = join(createTempDir(), "busca.ts");
+    writeFileSync(filePath, Array.from({ length: 15 }, () => 'let v = "x";').join("\n"));
+    const result = await getRenderedFileLines(filePath);
+
+    expect(result.searchLines).toHaveLength(result.lines.length);
+    expect(result.searchLines.filter((line) => line.includes("1"))).toHaveLength(0);
+    expect(result.searchLines[0]).toBe('let v = "x";');
+  });
+
+  test("sumário de código ignora const/type locais e usa a palavra-chave no título", async () => {
+    const filePath = join(createTempDir(), "consts.ts");
+    writeFileSync(
+      filePath,
+      "export const LIMITE = 10;\nexport function soma() {\n  const a = 1;\n  type Local = string;\n}\nclass Pilha {\n  def() {}\n}\n"
+    );
+    const result = await getRenderedFileLines(filePath);
+    expect(result.tableOfContents.map((item) => item.title)).toEqual(["const LIMITE", "function soma", "class Pilha"]);
+  });
+
+  test("arquivo Markdown salvo em ANSI aparece com os acentos", async () => {
+    const filePath = join(createTempDir(), "ansi.md");
+    writeFileSync(filePath, Buffer.from([0x23, 0x20, 0x41, 0xe7, 0xe3, 0x6f])); // "# Ação" em Windows-1252
+    const result = await getRenderedFileLines(filePath);
+    expect(result.tableOfContents.map((item) => item.title)).toEqual(["Ação"]);
+  });
+});
+
+describe("wrapAnsi em linhas longas", () => {
+  test("custo linear: 400 mil caracteres quebram rápido e sem perder texto", () => {
+    const text = "\x1B[33m" + "palavra ".repeat(50_000) + "\x1B[0m";
+    const started = performance.now();
+    const lines = wrapAnsi(text, 120);
+    const elapsed = performance.now() - started;
+
+    // A versão quadrática levava ~3,5 s para apenas 80 mil caracteres
+    expect(elapsed).toBeLessThan(2_000);
+    expect(lines.map(stripAnsi).join("")).toBe(stripAnsi(text));
+    expect(lines.every((line) => Bun.stringWidth(stripAnsi(line)) <= 120)).toBe(true);
+  });
+
+  test("expandTabsAnsi também é linear", () => {
+    const text = "a\t".repeat(100_000);
+    const started = performance.now();
+    expect(expandTabsAnsi(text)).toBe("a   ".repeat(100_000));
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+});
+
+describe("exportação HTML: ids dos cabeçalhos", () => {
+  test("mantêm letras acentuadas e de outros alfabetos", () => {
+    const html = convertFileToStaticHtml("# Instalação\n\n## Configuração Avançada\n\n# 日本語\n", "x.md");
+    const ids = [...html.matchAll(/<h\d id="([^"]*)"/g)].map((match) => match[1]);
+    expect(ids).toEqual(["instalação", "configuração-avançada", "日本語"]);
+  });
+});
